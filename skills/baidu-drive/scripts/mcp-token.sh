@@ -4,9 +4,11 @@
 #
 # What it does:
 #   * reads the token from a file, stdin, or the OS clipboard (a whole login_success URL is accepted)
-#   * validates it and edits only mcp.servers["baidu-netdisk"].headers.Authorization
+#   * validates it and writes one credential slot of the chosen host:
+#       zcode (default)  mcp.servers["baidu-netdisk"].headers.Authorization in the ZCode config
+#       hermes           MCP_BAIDU_NETDISK_API_KEY in the Hermes profile .env (mcp-token-hermes.sh)
 #   * writes atomically (temp file + rename) and verifies the result by re-reading
-#   * writes a REDACTED backup (Authorization values masked) instead of one that
+#   * (zcode) writes a REDACTED backup (Authorization values masked) instead of one that
 #     contains the token, and never keeps a plaintext copy
 #   * records the token's issue date locally; rewriting the same token keeps the
 #     original date, so the 30-day reminder cannot be reset by re-running the script
@@ -16,14 +18,16 @@
 #
 # usage:
 #   bash mcp-token.sh --auth-url
-#   bash mcp-token.sh --file <token-file> [--issued-at <date>] [--host zcode] [--config <path>]
-#   bash mcp-token.sh --stdin [--issued-at <date>] [--host zcode]
-#   bash mcp-token.sh --clipboard [--issued-at <date>] [--host zcode]
+#   bash mcp-token.sh --file <token-file> [--issued-at <date>] [--host zcode|hermes] [--config <path>]
+#   bash mcp-token.sh --stdin [--issued-at <date>] [--host zcode|hermes]
+#   bash mcp-token.sh --clipboard [--issued-at <date>] [--host zcode|hermes]
 #   bash mcp-token.sh --status
 #
 # --auth-url prints the official personal authorization URL (no token, no network).
 # --clipboard reads the copied login_success URL or raw token from the OS clipboard;
 # --issued-at preserves the real authorization date when syncing from a vault;
+# --host picks the target host: zcode (default) or hermes (what mcp-token-hermes.sh writes);
+# --config overrides the target file: the ZCode config.json, or the Hermes profile .env;
 # --status prints the recorded issue date, age, remaining days and expiry estimate.
 #
 # exits: 0 success, 1 failure, 2 usage
@@ -32,7 +36,7 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 usage() {
   cat >&2 <<'EOF'
-usage: bash mcp-token.sh (--file <token-file> | --stdin | --clipboard) [--issued-at <date>] [--host zcode] [--config <path>]
+usage: bash mcp-token.sh (--file <token-file> | --stdin | --clipboard) [--issued-at <date>] [--host zcode|hermes] [--config <path>]
        bash mcp-token.sh --auth-url
        bash mcp-token.sh --status
 
@@ -40,8 +44,9 @@ The source may contain either the raw access token or the whole login_success UR
 --auth-url prints the official personal authorization URL.
 --clipboard reads the copied URL/token from the OS clipboard (Windows/macOS/Linux).
 --issued-at accepts YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS and keeps the real authorization date.
+--host picks the target: zcode (default) writes config.json; hermes writes the profile .env.
+--config overrides the target file (ZCode config.json, or the Hermes .env).
 --status reads the local record only (no token, no network).
-Only --host zcode is configured automatically in phase 1; other hosts need --config.
 EOF
 }
 
@@ -109,11 +114,30 @@ if [ "$STATUS" = 1 ]; then
   exit 0
 fi
 
+hermes_home() {
+  if [ -n "${HERMES_HOME:-}" ]; then printf '%s\n' "$HERMES_HOME"; return; fi
+  if [ "$msys" = 1 ]; then printf '%s\n' "${LOCALAPPDATA:-$HOME/AppData/Local}/hermes"
+  else printf '%s\n' "$HOME/.hermes"; fi
+}
+to_unix() { # backslash paths break dirname and prefix checks in Git Bash
+  if [ "$msys" = 1 ] && command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; else printf '%s\n' "$1"; fi
+}
+
 if [ -z "$CONFIG" ]; then
   case "$HOST" in
     zcode) CONFIG="$HOME/.zcode/cli/config.json";;
-    *) echo "mcp-token: host '$HOST' has no default config yet; pass --config <path>" >&2; exit 2;;
+    hermes) CONFIG="$(hermes_home)/.env";;
+    *) echo "mcp-token: unknown host '$HOST' (zcode or hermes)" >&2; exit 2;;
   esac
+fi
+if [ "$HOST" = hermes ]; then
+  # The Hermes writer needs the profile's config.yaml next to the .env it edits.
+  CONFIG="$(to_unix "$CONFIG")"
+  HERMES_DIR="$(dirname "$CONFIG")"
+  [ -f "$HERMES_DIR/config.yaml" ] || {
+    echo "mcp-token: no config.yaml in $HERMES_DIR, so it is not a Hermes home; set HERMES_HOME or pass --config <hermes-home>/.env" >&2
+    exit 2
+  }
 fi
 
 sources=0
@@ -183,13 +207,14 @@ else
 fi
 
 # ---- edit the config atomically -------------------------------------------------
-command -v node >/dev/null 2>&1 || {
-  echo "mcp-token: node is required for atomic JSON editing; edit the file manually:" >&2
-  echo "  set mcp.servers[\"baidu-netdisk\"].headers.Authorization to \"Bearer <token>\"" >&2
-  exit 1
-}
+write_zcode() {
+  command -v node >/dev/null 2>&1 || {
+    echo "mcp-token: node is required for atomic JSON editing; edit the file manually:" >&2
+    echo "  set mcp.servers[\"baidu-netdisk\"].headers.Authorization to \"Bearer <token>\"" >&2
+    exit 1
+  }
 
-result="$(MCP_TOKEN="$token" node - "$CONFIG" <<'NODE'
+  result="$(MCP_TOKEN="$token" node - "$CONFIG" <<'NODE'
 const fs = require('fs');
 const [configPath] = process.argv.slice(2);
 const token = process.env.MCP_TOKEN || '';
@@ -261,7 +286,15 @@ console.log(JSON.stringify({
   token_length: token.length,
 }));
 NODE
-)"
+  )"
+}
+
+if [ "$HOST" = hermes ]; then
+  result="$(MCP_TOKEN="$token" BDPANW_TOKEN_SHA256="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)" \
+    bash "$here/mcp-token-hermes.sh" "$CONFIG")"
+else
+  write_zcode
+fi
 
 if ! printf '%s' "$result" | grep -q '"ok":true'; then
   echo "mcp-token: failed: $result" >&2

@@ -15,7 +15,7 @@
 
 | 频率 | 动作 | 预计耗时 |
 |---|---|---|
-| 每月 | `bash scripts/update.sh --check`；`git fetch upstream --prune` 后用 `git log --oneline HEAD..upstream/main` 看落后；`mcp-token.sh --status` 看 token 剩余天数；跑一次只读冒烟（whoami、quota、`ls` 空目录、MCP `file_list` 根目录） | 约 10 分钟 |
+| 每月 | `bash scripts/update.sh --check`；`git fetch upstream --prune` 后用 `git log --oneline HEAD..upstream/main` 看落后；`mcp-token.sh --status` 看 token 剩余天数；跑一次只读冒烟（whoami、quota、`ls` 空目录、MCP `file_list` 根目录；接了 Hermes 的再跑 `hermes mcp test baidu-netdisk`） | 约 10 分钟 |
 | 每次 CLI / skill 升级后 | 按 [regression.md](../../skills/baidu-drive/reference/regression.md) 全量回归（含全盘删除 5.1） | 30–60 分钟 |
 | 每季度 | 重抓开放平台文档（[open-docs.md](./open-docs.md)）；导出 MCP 工具清单并与基线比对（[mcp-tools.md](./mcp-tools.md)） | 1–2 小时 |
 | 随时 | 出现 `unknown command`、`unknown tool`、schema 错误、`errno` 变化 → 停止，不改用猜测参数，记录后跑回归 | — |
@@ -39,6 +39,7 @@
 | MCP token 签发 | 2026-11-25T14:48:41（本地记录），30 天后到期；详见 [token.md](./token.md) |
 | 1Password 条目 | `baidu-netdisk-mcp`（`MCP_TOKEN` / `ISSUED_AT`，metadata complete） |
 | CLI token 到期 | 2026-12-25T09:44:50+08:00（`bdpan whoami --json` 的 `expires_at`） |
+| Hermes | Agent v0.23.4；MCP 通道 2026-11-25 接入（`transport: sse`，token 在 `.env`，skill 经 `skills.external_dirs` 挂载）；宿主细节见 [hosts/hermes.md](../../skills/baidu-drive/reference/hosts/hermes.md) |
 
 基线是“上次核对过的事实”，不是保证；每次升级/比对后更新本表。
 

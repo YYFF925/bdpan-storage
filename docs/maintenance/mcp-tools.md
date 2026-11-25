@@ -26,6 +26,8 @@ jq -r '.ok, .count, .server.version' /tmp/mcp-tools.current.json
 
 `mcp-call.mjs` 是维护工具，放在 `docs/maintenance/tools/`，**不被 skill 加载**，也不参与日常文件操作。它会自动处理官方的 `ping`、换新会话重试；token 只从 `MCP_TOKEN` 或 token 文件读取，输出和错误里都会脱敏。
 
+在 Hermes 终端里执行上面的命令时，把 `/tmp/...` 换成 Windows 风格路径（例如 `"$(cygpath -m /tmp)/mcp-tools.current.json"`）：Hermes 默认设了 `MSYS_NO_PATHCONV=1`，`jq`、`node` 收到 `/tmp/...` 会找不到文件（2026-11-25 在同样的环境下实测）。
+
 ## 2. 比对
 
 ```bash

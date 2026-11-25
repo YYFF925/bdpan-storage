@@ -618,6 +618,7 @@ bdpan rm "_zcode-smoke-20261125" --force --json
 
 1. **双通道 skill 已实施并通过验收**（见第 13 节）；已提交到 `custom` 分支。
 2. **Hermes Agent / dsh 适配**：暂缓。已查清：Hermes 主目录在 `%LOCALAPPDATA%\hermes`，读取项目内 `.agents/skills` 或配置 `skills.external_dirs`；dsh 为 DeepSeek Harness（`@deepseek-ai/dsh`），插件式架构，skill 加载方式尚未查清。
+   - 2026-11-25 晚更新：Hermes 已适配并实机验证，见 `skills/baidu-drive/reference/hosts/hermes.md`；dsh 仍未做。
 3. **MCP 令牌续期**：约 2026-12-25 到期，需重新授权并更新 ZCode 配置（计划中的 `mcp-token.sh` 即为此准备）。
 4. **shared-credentials 的 Hermes 侧**：不需要单独改文件；`lobster` 域副本与库同源，拉取库即得到同一修复。
 5. **四个既有暂停部署**（与本次凭据修复无关，需你裁决保留本地还是按库覆盖）：`code/credential-onboarding` → `agent:antigravity`；`code/skill-manager-maintenance`、`code/weknora-manager`、`code/weknora-search` → `shared`。均因受管副本被外部修改而暂停（`paused_local_change`）。
@@ -835,6 +836,7 @@ skills/baidu-drive/scripts/update.sh  | 408 ++++++--------------------------
 
 - 已提交到 `custom` 分支。
 - 未做 Hermes Agent / dsh 适配（只保留了宿主适配文档位）。
+- 2026-11-25 晚更新：Hermes 已适配并实机验证，见 `skills/baidu-drive/reference/hosts/hermes.md`；dsh 仍未做。
 - 全盘删除已按用户要求启用（2026-11-25 晚，见第 14 节）：需用户明确允许（AI 可主动建议），走中转删除。
 - MCP token 约 2026-12-25 到期，需重新授权并再次执行 `mcp-token.sh`。
 - MCP 会话建立仍有随机失败，依赖宿主重连。

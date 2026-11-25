@@ -14,7 +14,7 @@ allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion
 
 > **1.7.7**：需配套 `bdpan 3.8.9`，不能只更新 Skill 后使用旧 CLI。使用前核对 CLI 版本；不符时提示用户确认安装或更新，不自行更换安装。
 
-百度网盘文件管理工具。CLI 通道的文件操作限制在 `/apps/bdpan/` 目录内；全盘的查找与整理经官方 MCP Server，本地文件进出全盘经中转目录。容量查询仅返回账号整体空间元数据，不扩大文件访问范围。适配 Claude Code、ZCode、OpenClaw 等。
+百度网盘文件管理工具。CLI 通道的文件操作限制在 `/apps/bdpan/` 目录内；全盘的查找与整理经官方 MCP Server，本地文件进出全盘经中转目录。容量查询仅返回账号整体空间元数据，不扩大文件访问范围。适配 Claude Code、ZCode、Hermes、OpenClaw 等。
 
 > 使用注意事项详见 [reference/notes.md](./reference/notes.md)
 
@@ -29,9 +29,9 @@ allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion
 | `bdpan` CLI（经 `scripts/bdpanw.sh` 调用） | 仅 `/apps/bdpan`（网盘里显示为“我的应用数据/bdpan”） | 本地文件上传/下载、读正文、删除 |
 | 官方 MCP Server（`baidu-netdisk`，25 个工具） | 整个网盘 | 列目录、搜索、建文件夹、复制、移动、重命名、按内容/URL 存文件、读 Office/PDF 正文、分享与转存 |
 
-- MCP 工具按名称引用（`file_list`、`file_move`…）。不同宿主的前缀不同：ZCode 是 `mcp__baidu-netdisk__file_list`。当前会话没有这些工具时，退回仅应用目录的能力，并按 [reference/hosts/zcode.md](./reference/hosts/zcode.md) 提示配置。
+- MCP 工具按名称引用（`file_list`、`file_move`…）。不同宿主的前缀不同：ZCode 是 `mcp__baidu-netdisk__file_list`，Hermes 是 `mcp__baidu_netdisk__file_list`（经 `tool_call` 调用）。当前会话没有这些工具时，退回仅应用目录的能力，并按 [reference/hosts/zcode.md](./reference/hosts/zcode.md) 或 [reference/hosts/hermes.md](./reference/hosts/hermes.md) 提示配置。
 - `bdpanw.sh` 只负责 CLI：找二进制、处理 Git Bash 路径、加公共参数、强制 `--json --no-check-update`、按 JSON 内容判定成败、修正空目录列表。**不做重试，也不管理 MCP 会话。**
-- 文档里的 `bdpan xxx` 一律读作 `bash ${CLAUDE_SKILL_DIR}/scripts/bdpanw.sh xxx`。在 ZCode 等宿主里，`${CLAUDE_SKILL_DIR}` 指加载本 skill 时给出的 Base directory。
+- 文档里的 `bdpan xxx` 一律读作 `bash ${CLAUDE_SKILL_DIR}/scripts/bdpanw.sh xxx`。在 ZCode 等宿主里，`${CLAUDE_SKILL_DIR}` 指加载本 skill 时给出的 Base directory；在 Hermes 里指 `skill_view` 返回的 `skill_dir`。
 
 ### 路由
 
@@ -108,8 +108,8 @@ MCP token 30 天有效、不能刷新。出现以下任一情况时按本节处�
 
 1. 运行 `bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --auth-url` 拿到官方授权链接，用 Markdown 链接给用户；可询问是否代为打开浏览器（Windows `powershell -NoProfile -Command "Start-Process '<URL>'"`，macOS `open '<URL>'`，Linux `xdg-open '<URL>'`）。
 2. 用户在页面登录并授权。成功后浏览器地址栏是 `https://openapi.baidu.com/oauth/2.0/login_success#expires_in=2592000&access_token=...`；请用户**复制整条地址栏 URL**（不是只复制 token）。
-3. 用户复制后运行 `bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --clipboard`。脚本只从剪贴板读取，不打印 token，不需要用户把 URL 粘进对话或保存文件。剪贴板不可用时，退回“保存到临时文件 + `--file`”。
-4. 运行 `mcp-token.sh --status` 确认 `issued_at` 与剩余天数；重启 ZCode 或在 Settings → MCP 重连；用一次只读 MCP 调用（`user_info` 或 `file_list` 根目录）验证。
+3. 用户复制后运行 `bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --clipboard`（默认写 ZCode；在 Hermes 里加 `--host hermes`，两个宿主各同步一次）。脚本只从剪贴板读取，不打印 token，不需要用户把 URL 粘进对话或保存文件。剪贴板不可用时，退回“保存到临时文件 + `--file`”。
+4. 运行 `mcp-token.sh --status` 确认 `issued_at` 与剩余天数；重启 ZCode 或在 Settings → MCP 重连（Hermes：新开会话或 `/reload-mcp`，见 [reference/hosts/hermes.md](./reference/hosts/hermes.md)）；用一次只读 MCP 调用（`user_info` 或 `file_list` 根目录）验证。
 5. 已接入 1Password 时：按 [docs/maintenance/token.md](../../docs/maintenance/token.md) 的轮换流程更新 `baidu-netdisk-mcp` 的 `MCP_TOKEN`/`ISSUED_AT`；没有条目时先完成宿主同步，再提醒用户登记到 1Password。
 
 安全：完整 `login_success` URL 含 access_token，禁止显示在回复、日志或命令回显中；只报长度/hash。`--clipboard` 失败时不要打印剪贴板内容。

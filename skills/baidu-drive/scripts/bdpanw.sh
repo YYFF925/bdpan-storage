@@ -77,7 +77,7 @@ rand6() {
 # {timestamp}-{6 random} shape and reuse within a conversation.
 session_id() {
   if [ -n "${BDPANW_SESSION_ID:-}" ]; then printf '%s\n' "$BDPANW_SESSION_ID"; return; fi
-  local host="${ZCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}"
+  local host="${ZCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${HERMES_SESSION_ID:-}}}}"
   if [ -z "$host" ]; then printf '%s-%s\n' "$(date +%s)" "$(rand6)"; return; fi
   local dir key
   dir="$(state_dir)/sessions"
@@ -95,6 +95,7 @@ agent_name() {
   if [ -n "${BDPANW_AGENTNAME:-}" ]; then printf '%s\n' "$BDPANW_AGENTNAME"; return; fi
   if [ -n "${ZCODE_APP_VERSION:-}${ZCODE_SESSION_ID:-}" ]; then printf 'zcode\n'
   elif [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ]; then printf 'claude-code\n'
+  elif [ -n "${HERMES_SESSION_ID:-}" ]; then printf 'hermes\n'
   else printf 'baidu-drive\n'; fi
 }
 

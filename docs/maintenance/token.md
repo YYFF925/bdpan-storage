@@ -5,7 +5,7 @@
 | Token | 用途 | 存放位置 | 有效期 |
 |---|---|---|---|
 | CLI token | `bdpan` CLI 登录（whoami、上传下载、删除…） | `~/.config/bdpan/config.json`（**不要读取或输出内容**） | `bdpan whoami --json` 的 `expires_at`；上游文档称快过期自动刷新 |
-| MCP token | 连接官方 MCP Server `https://mcp-pan.baidu.com/sse` | ZCode 配置的 `mcp.servers["baidu-netdisk"].headers.Authorization` | 授权后 30 天，不能刷新 |
+| MCP token | 连接官方 MCP Server `https://mcp-pan.baidu.com/sse` | ZCode：配置里的 `mcp.servers["baidu-netdisk"].headers.Authorization`；Hermes：`.env` 里的 `MCP_BAIDU_NETDISK_API_KEY` | 授权后 30 天，不能刷新 |
 
 本页主要讲 MCP token。CLI token 的登录、续期走 `scripts/login.sh`，不在本项目维护范围内。
 
@@ -18,6 +18,13 @@ MCP token：
   - `token_sha256`：token 的 sha256 前 16 位；
   - `issued_at`：本地记录的签发时间。
 - 注意：ZCode 配置里的 token 是**明文**；不要同步到云盘、不要提交进仓库。`mcp-token.sh` 写配置时只生成脱敏备份（`Authorization` 替换为 `Bearer <redacted>`）。
+
+Hermes（2026-11-25 起）：
+
+- 值：`%LOCALAPPDATA%\hermes\.env` 里的 `MCP_BAIDU_NETDISK_API_KEY`（裸 token）。这是 Hermes 自己的约定：`config.yaml` 里只写 `Authorization: Bearer ${MCP_BAIDU_NETDISK_API_KEY}`，连接时才展开，所以 `config.yaml` 里没有明文；
+- `config.yaml` 的 `mcp_servers.baidu-netdisk` 另有 `url`、`transport: sse`、`enabled: true`；
+- 本地元数据与 ZCode 共用同一个 `state.env`，`mcp-token.sh --status` 不区分宿主；
+- 细节与已知限制见 [hosts/hermes.md](../../skills/baidu-drive/reference/hosts/hermes.md)。
 
 CLI token：
 
@@ -65,7 +72,7 @@ CLI token 则相反：`whoami` 直接返回精确的 `expires_at`，且上游文
 
 ## 3. 1Password 集成（已启用）
 
-真源放在 shared-credentials 的 1Password 库里，本项目只负责“取出来、同步进宿主配置”，不负责签发和续期。
+真源放在 shared-credentials 的 1Password 库里，本项目只负责“取出来、同步进宿主配置”，不负责签发和续期。`credentials.py` 冷启动可能很慢（2026-11-25 实测 `check` 超过 2 分钟才返回），脚本里调用要给足超时。
 
 ### 3.1 条目（已建立，2026-11-25）
 
@@ -92,7 +99,11 @@ ERROR: op item create failed: ... Permission: (101) You do not have permission t
 
 条目最终由 Hermes（有写权限）创建。本机只读即可完成读取、同步和验证；以后轮换时如果本机 SA 仍无写权限，继续由 Hermes 更新，或先给 SA 授予 Create/Edit 权限。不要反复重试或改用 `op read`。
 
-### 3.2 同步到 ZCode
+### 3.2 同步到宿主
+
+`mcp-token.sh` 一次只写一个宿主（`--host` 默认是 `zcode`），两个宿主各同步一次。
+
+ZCode：
 
 ```bash
 python "$USERPROFILE/.agents/skills/shared-credentials/scripts/credentials.py" run \
@@ -114,13 +125,15 @@ python "$USERPROFILE/.agents/skills/shared-credentials/scripts/credentials.py" r
 
 2026-11-25 实测：从库中 `run` 注入 token，按上面的命令写入临时 config，`token_length=83`、`issued_at` 保留、Authorization header 正确；未触碰真实 ZCode 配置。
 
+Hermes：同一条命令加 `--host hermes`（本机刚授权的场景是 `mcp-token.sh --clipboard --host hermes`）。脚本把值写进 Hermes 的 `.env`，`config.yaml` 只保留 `${…}` 模板，`mcp_servers.baidu-netdisk` 条目缺失时会自动补建；同步后跑 `hermes mcp test baidu-netdisk`，列出 25 个工具即成功。2026-11-25 实测（真实 Hermes，真 token）：17 秒完成，输出 `server_added:false`，`issued_at` 保持原值，`.env` 里该键只有一行，`config.yaml` 和 `.env` 相对运行前逐项一致；`config.yaml` 相对接入前只多了 `mcp_servers.baidu-netdisk` 下的键和 `skills.external_dirs`，注释全部保留。
+
 ### 3.3 为什么还需要“同步”这一步
 
-ZCode 当前的 MCP 配置是静态 header，文档没有提供环境变量或命令式 header 的插值。MCP 连接在会话启动时建立，宿主不会每次去 1Password 取 token。因此：
+ZCode 当前的 MCP 配置是静态 header，文档没有提供环境变量或命令式 header 的插值。MCP 连接在会话启动时建立，宿主不会每次去 1Password 取 token。Hermes 的 header 支持 `${VAR}` 引用，但引用的是它自己 `.env` 里的值，同样不会去 1Password 取。因此：
 
 - **1Password 是唯一真源**；
 - `mcp-token.sh` 只是“把真源写进宿主配置”的同步器，不拥有 token、不判断续期；
-- 如果未来宿主支持 env / command header，这一步可以删掉，skill 直接引用凭据即可。
+- 如果未来宿主支持直接引用密钥库（例如 Hermes 自带的 `hermes secrets onepassword`），这一步可以删掉；那需要把 1Password 的 Service Account token 交给 Hermes，是否启用另行决定。
 
 ### 3.4 重新授权（最小操作）
 
@@ -134,17 +147,17 @@ https://openapi.baidu.com/oauth/2.0/authorize?response_type=token&client_id=QHOu
 
 1. 打开链接，登录百度账号并授权（可扫码）；
 2. 成功后浏览器地址栏是 `https://openapi.baidu.com/oauth/2.0/login_success#expires_in=2592000&access_token=...`；复制**整条 URL**（`expires_in=2592000` 就是 30 天）；
-3. 运行 `bash scripts/mcp-token.sh --clipboard`。脚本从剪贴板读取，不打印 token；不需要粘进对话或保存文件。剪贴板不可用时，把 URL 存到临时文件，再用 `--file`；
+3. 运行 `bash scripts/mcp-token.sh --clipboard`（Hermes 里加 `--host hermes`）。脚本从剪贴板读取，不打印 token；不需要粘进对话或保存文件。剪贴板不可用时，把 URL 存到临时文件，再用 `--file`；
 4. 运行 `--status` 确认 `issued_at` 和剩余天数；
-5. 重启 ZCode / 重连 MCP，做一次只读验证；
+5. 重启 ZCode / 重连 MCP（Hermes：同步后新开会话；轮换后稳妥起见重启 Hermes），做一次只读验证；
 6. 已接入 1Password 时，把新的 `MCP_TOKEN` / `ISSUED_AT` 更新回库；顺序可以是“先库后本机”或“先本机后库”，但两边最终要一致。
 
 ### 3.5 轮换与过期处理
 
 1. 重新走 3.4，拿到新 token（或 `login_success` URL）；
 2. 在 1Password 里更新 `MCP_TOKEN` 和 `ISSUED_AT`（弹窗输入，值不进对话）；
-3. 执行 3.2 的同步命令；
-4. 重启 ZCode / 重连 MCP；
+3. 执行 3.2 的同步命令（两个宿主各一次）；
+4. 重启 ZCode / 重连 MCP（Hermes 稳妥起见重启）；
 5. 只读验证；
 6. 旧 token 失效属于预期；确认新 token 可用后再清理旧备份（备份本身已脱敏）。
 

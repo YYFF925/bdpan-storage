@@ -1,6 +1,6 @@
 # 全盘管理（双通道）参考
 
-本文是 `SKILL.md` 全盘章节的展开。适用范围：第一阶段（ZCode 实机验证），个人自用；应用目录之外的删除**经用户明确允许后**经中转执行。
+本文是 `SKILL.md` 全盘章节的展开。适用范围：ZCode 与 Hermes 已实机验证，个人自用；应用目录之外的删除**经用户明确允许后**经中转执行。
 
 ## 1. 两条通道
 
@@ -18,6 +18,7 @@
 MCP 工具按名称引用；宿主前缀不同：
 
 - ZCode：`mcp__baidu-netdisk__file_list`
+- Hermes：`mcp__baidu_netdisk__file_list`（经 `tool_call` 调用）
 - 其他宿主：按实际注册名映射，见 `reference/hosts/`
 
 ## 2. 路径模型
@@ -174,7 +175,7 @@ bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --status
   - 备份**脱敏**（`Authorization` 值替换为 `Bearer <redacted>`），不留明文副本；
   - 在本机记录 token 的 sha256 摘要与**签发日期**；重写同一个 token 不会重置日期；从密钥库同步时可用 `--issued-at <日期>` 保留真实签发日期；超过 25 天打印续期警告；
   - `--status` 只读本地记录，输出 `issued_at` / `age_days` / `remaining_days` / `expires_at`；
-  - `--host zcode` 使用默认配置路径；其他宿主用 `--config <path>`。
+  - `--host zcode`（默认）写 ZCode 配置；`--host hermes` 写 Hermes 的 `.env`（见 [hosts/hermes.md](./hosts/hermes.md)）；`--config <path>` 覆盖目标文件。
 - **剩余时间**：MCP token 是 4 段 base64url、不是 JWT，没有 `exp`，MCP `user_info` 也不返回有效期，因此只能按 `issued_at + 30 天` 估算；CLI token 的到期时间可以用 `bdpan whoami --json` 的 `expires_at` 精确读取。两者不是同一个 token。
 - 注意：宿主配置文件里的 token 是**明文**，不要同步到云盘或提交进仓库。
 
@@ -192,7 +193,7 @@ bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --status
 - **`fsid` 不随重命名/移动改变（实测）**，可作为移动/重命名核对的唯一标识；复制会产生新 `fsid`。
 - CLI 的 `ls /` = 应用根目录；全盘根目录用 MCP `file_list`。
 - `file_keyword_search` 是模糊匹配，可能命中含相关词的其他文件，不能据此断言“不存在”。
-- MCP 会话建立有随机失败（服务端 202 后不应答）；宿主会自动重连，失败时提示用户在 Settings → MCP 重连并重试。
+- MCP 会话建立有随机失败（服务端 202 后不应答）；宿主会自动重连，失败时提示用户在 Settings → MCP 重连（Hermes：新开会话或 `/reload-mcp`）并重试。
 - MCP 写操作失败形如 `{"errno":12,"info":[{"errno":-9,...}]}`（外层任务级、内层文件级）。
 - `file_semantics_search` 结果结构为 `data[].list[]`；`file_keyword_search` 为顶层 `list[]`。
 - MCP `file_meta` 一次最多 10 个 fsid；`file_content_create` 一次 1–5 个 fsid。
