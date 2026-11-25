@@ -1,11 +1,12 @@
 ---
 name: baidu-drive
 description: >-
-  百度网盘(Baidu Drive)文件管理与正文能力 — 上传、下载、转存、分享、搜索文件、搜索正文片段、读取文件全文、移动、复制、重命名、创建文件夹；查询网盘容量、已用和剩余空间。
+  百度网盘全盘管理（Baidu Drive，含 /apps/bdpan 之外）：创建、上传、下载、移动、重命名、复制、搜索、转存分享链接、读取文档正文、查询容量；应用目录之外的删除经用户明确允许后通过中转执行。
+  双通道：bdpan CLI 负责应用目录内的本地文件进出、读正文与删除；官方 MCP Server 负责全盘的查找与整理；本地文件进出全盘经中转目录。
   同时支持 Agent 记忆备份/恢复（kimiclaw/maxclaw/qclaw/openclaw）。
-  TRIGGER: 用户提及"百度网盘/bdpan/网盘/云盘/baidu drive/Baidu Drive"并涉及文件操作或查询网盘容量、剩余空间、使用率；
-           或用户提及"备份记忆"、"恢复记忆"、"查看记忆备份"等记忆相关操作。
-  DO NOT TRIGGER: 非文件存储操作，或使用其他云盘服务时；本地记忆整理/清理操作；PPT 生成操作（已独立为 baidu-wenku-aippt skill）。
+  TRIGGER: 用户提及"百度网盘/bdpan/网盘/云盘/baidu drive/Baidu Drive"并涉及文件操作、搜索、上传下载、整理或容量查询；或提及"备份记忆/恢复记忆/查看记忆备份"。
+  DO NOT TRIGGER: 非文件存储操作；其他云盘；本地记忆整理/清理；PPT 生成（已独立为 baidu-wenku-aippt skill）。
+when_to_use: 用户要在百度网盘里创建、上传、下载、查找、移动、重命名、复制文件，或读取文档正文、查询网盘容量；备份或恢复 Agent 记忆。
 allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion
 ---
 
@@ -13,9 +14,107 @@ allowed-tools: Bash, Read, Glob, Grep, AskUserQuestion
 
 > **1.7.7**：需配套 `bdpan 3.8.9`，不能只更新 Skill 后使用旧 CLI。使用前核对 CLI 版本；不符时提示用户确认安装或更新，不自行更换安装。
 
-百度网盘文件管理工具，文件操作限制在 `/apps/bdpan/` 目录内；容量查询仅返回账号整体空间元数据，不扩大文件访问范围。适配 Claude Code、DuClaw、OpenClaw 等。
+百度网盘文件管理工具。CLI 通道的文件操作限制在 `/apps/bdpan/` 目录内；全盘的查找与整理经官方 MCP Server，本地文件进出全盘经中转目录。容量查询仅返回账号整体空间元数据，不扩大文件访问范围。适配 Claude Code、ZCode、OpenClaw 等。
 
 > 使用注意事项详见 [reference/notes.md](./reference/notes.md)
+
+## 本 fork：全盘管理（双通道）
+
+本仓库是个人定制版，与官方 skill 的差别只在于“多了第二条通道”和少量适配；上游的安全规则全部保留。
+
+### 两条通道
+
+| 通道 | 覆盖范围 | 负责 |
+|---|---|---|
+| `bdpan` CLI（经 `scripts/bdpanw.sh` 调用） | 仅 `/apps/bdpan`（网盘里显示为“我的应用数据/bdpan”） | 本地文件上传/下载、读正文、删除 |
+| 官方 MCP Server（`baidu-netdisk`，25 个工具） | 整个网盘 | 列目录、搜索、建文件夹、复制、移动、重命名、按内容/URL 存文件、读 Office/PDF 正文、分享与转存 |
+
+- MCP 工具按名称引用（`file_list`、`file_move`…）。不同宿主的前缀不同：ZCode 是 `mcp__baidu-netdisk__file_list`。当前会话没有这些工具时，退回仅应用目录的能力，并按 [reference/hosts/zcode.md](./reference/hosts/zcode.md) 提示配置。
+- `bdpanw.sh` 只负责 CLI：找二进制、处理 Git Bash 路径、加公共参数、强制 `--json --no-check-update`、按 JSON 内容判定成败、修正空目录列表。**不做重试，也不管理 MCP 会话。**
+- 文档里的 `bdpan xxx` 一律读作 `bash ${CLAUDE_SKILL_DIR}/scripts/bdpanw.sh xxx`。在 ZCode 等宿主里，`${CLAUDE_SKILL_DIR}` 指加载本 skill 时给出的 Base directory。
+
+### 路由
+
+| 用户要做的 | 位置 | 做法 |
+|---|---|---|
+| 列目录、搜索、查详情 | 任意 | MCP |
+| 建文件夹、移动、重命名、复制 | 任意 | MCP |
+| 把一段文字存成文件 | 任意 | MCP `file_upload_by_content` |
+| 读 Office/PDF 正文 | 任意 | MCP `file_content_create` + `file_content_get` |
+| 上传本地文件 | `/apps/bdpan` 内 | CLI |
+| 上传本地文件 | 其他位置 | CLI 传到 `_staging`，MCP 移到目标 |
+| 下载到本地 | `/apps/bdpan` 内 | CLI |
+| 下载到本地 | 其他位置 | MCP 复制到 `_staging`，CLI 下载，再删副本 |
+| 读 txt/md 正文 | 其他位置 | MCP 复制到 `_staging`，CLI 读取，再删副本 |
+| 删除 | `/apps/bdpan` 内 | CLI（沿用删除规则） |
+| 删除 | 其他位置 | 可主动建议；列出对象并获用户明确允许 → MCP 移到 `_staging/del-<id>/` → 核对 `fsid` → CLI 删除 |
+| 转存分享链接 | 任意 | MCP `file_sharelink_list` / `verify` / `transfer` |
+
+### 中转目录
+
+- 根目录固定 `_staging/`（即 `/apps/bdpan/_staging/`）；每个任务一个子目录：`_staging/up-<id>/`、`_staging/dl-<id>/`、`_staging/read-<id>/`、`_staging/del-<id>/`。
+- 用 `bash ${CLAUDE_SKILL_DIR}/scripts/staging.sh new up|dl|read|del` 创建任务，脚本在本机记录 id、类型、状态与远端路径；`status`/`set`/`list`/`clean`/`stale` 管理。**没有数据库、队列或常驻服务。**
+- 状态：`preparing → remote_ready → local_done → done → cleaned`；失败记 `failed`。**只有 `done` 才允许 `clean`**；失败或中断保留现场并告诉用户文件在哪里。
+- 并发安全：任务目录名带唯一 id，建目录用 `rtype=0`（冲突即失败）；不要复用同一个 `_staging` 子目录跑两个任务。
+
+### 失败与重试（与普通 CLI 用法的关键区别）
+
+- **写操作绝不盲目重试。** 超时或报错只说明调用方不知道结果，不说明服务端没执行。
+- 先核对再决定，用 `fsid`、`md5`、任务 id 核对，而不是只看文件名和大小：
+  - 建目录：`ls` 父目录已有该名字 = 成功；
+  - 上传：远端同名文件的 `size` 与本地一致，且 `action` 为 created/renamed/overwritten/unchanged = 成功；需要内容级证明时把文件下载回来与本地副本比对（百度返回的 `md5` 不是标准 MD5，**不能**与本地 `md5sum` 比对）；
+  - 下载：本地文件 `md5` 与下载前的本地副本或已知值一致 = 成功；CLI 先写 `.part` 再原子替换，中断不会破坏旧文件，但会留下 `.part` 需要清理；
+  - 移动/重命名：源消失且目标出现、`fsid` 不变 = 成功（实测 `fsid` 不随重命名/移动改变）；两者都在 = 停止并报告；
+  - 删除：目标消失 = 成功；
+  - 转存：用返回的 `task_id` 查询任务。
+- **无法确认状态时停止并报告**，不要重试。只读命令（`ls`/`search`/`file_list`/`file_meta`）可以重试 3 次。
+
+### 删除规则（全盘）
+
+**删除必须得到用户的明确允许，但“明确允许”不等于用户必须先说出路径。** 你可以在任务过程中主动提出删除建议（例如“这个中转副本已经没用了，可以删掉”），也可以由用户直接要求删除。无论哪种，执行前都必须列出具体对象和影响，得到用户清楚、肯定的答复；含糊、沉默、只问方法都不算允许。
+
+- `/apps/bdpan` 内：沿用后文删除规则（明确允许 + `--force --json`）。
+- `/apps/bdpan` 之外：按“中转删除”执行。MCP 没有删除工具，唯一路径是先把目标移动进应用目录、再用 CLI 删除；文件会先离开原目录，这一风险必须在征求允许时说明。
+
+中转删除步骤（缺一步都不算完成）：
+
+1. 用 MCP `file_list` / `file_meta` 确认目标存在且唯一，记录完整路径、类型、大小、`fsid`；
+2. 向用户列出：完整路径、文件/文件夹、大小、将移动到 `我的应用数据/bdpan/_staging/del-<id>/` 后删除、**删除不可恢复**；说明这是你的建议还是用户的指令；等待用户明确允许（“可以/删吧/同意”）。用户含糊、取消或只问方法 → 不执行任何移动；
+3. `staging.sh new del` 创建任务，`staging.sh set <id> note <原完整路径>` 记录来源（用于失败回退）；
+4. MCP `file_move`：`filelist=[{"path":"<原路径>","dest":"/apps/bdpan/_staging/del-<id>"}]`（`filelist` 是 JSON 字符串；文件夹会作为子目录落入该目录）；
+5. 核对：原位置已消失，中转目录出现同名项且 `fsid` 与原值一致。原位置仍在或 `fsid` 不一致 → 停止，报告两侧实际路径，不继续删除；
+6. `bdpanw.sh rm <中转路径> --force`（`--json` 由包装脚本自动加），核对中转目录为空；
+7. `staging.sh set <id> status done`，`staging.sh clean <id>` 清理任务目录并标记 cleaned。
+
+失败处理：
+
+- 第 4 步失败：文件仍在原位，报告错误，不重试删除；
+- 第 5 步核对不一致：停止并报告，保留中转目录现场；
+- 第 6 步失败：文件已在中转目录，报告实际路径；用户要求恢复时用 MCP `file_move` 移回 `note` 里的原路径，**不得**用删除掩盖失败；
+- 可以一次列出多个对象，由用户一次性允许；未列入的对象不得顺手删除；目标集合发生变化（新增、改写、扩大）必须重新征求允许。
+
+### 遥测
+
+`bdpanw.sh` 默认 `BDPANW_TELEMETRY=minimal`：只带 `--agentname` 与 `--session-id`，**不上报用户原话**。可改为 `full`（带 `--session-input`）或 `none`。包装脚本只能控制显式参数；CLI 自身的采集无法从 skill 层关闭。
+
+### MCP 授权过期（30 天）
+
+MCP token 30 天有效、不能刷新。出现以下任一情况时按本节处理，**不要让用户自己去找授权入口**：
+
+- `mcp-token.sh --status` 显示 `remaining_days` ≤ 5 或 `expired=yes`；
+- MCP 调用返回 HTTP 400 / `errno=2003` / `auth fail:token fail`。
+
+步骤：
+
+1. 运行 `bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --auth-url` 拿到官方授权链接，用 Markdown 链接给用户；可询问是否代为打开浏览器（Windows `powershell -NoProfile -Command "Start-Process '<URL>'"`，macOS `open '<URL>'`，Linux `xdg-open '<URL>'`）。
+2. 用户在页面登录并授权。成功后浏览器地址栏是 `https://openapi.baidu.com/oauth/2.0/login_success#expires_in=2592000&access_token=...`；请用户**复制整条地址栏 URL**（不是只复制 token）。
+3. 用户复制后运行 `bash ${CLAUDE_SKILL_DIR}/scripts/mcp-token.sh --clipboard`。脚本只从剪贴板读取，不打印 token，不需要用户把 URL 粘进对话或保存文件。剪贴板不可用时，退回“保存到临时文件 + `--file`”。
+4. 运行 `mcp-token.sh --status` 确认 `issued_at` 与剩余天数；重启 ZCode 或在 Settings → MCP 重连；用一次只读 MCP 调用（`user_info` 或 `file_list` 根目录）验证。
+5. 已接入 1Password 时：按 [docs/maintenance/token.md](../../docs/maintenance/token.md) 的轮换流程更新 `baidu-netdisk-mcp` 的 `MCP_TOKEN`/`ISSUED_AT`；没有条目时先完成宿主同步，再提醒用户登记到 1Password。
+
+安全：完整 `login_success` URL 含 access_token，禁止显示在回复、日志或命令回显中；只报长度/hash。`--clipboard` 失败时不要打印剪贴板内容。
+
+详细能力、参数形态、返回结构与校验配方见 [reference/whole-drive.md](./reference/whole-drive.md)；CLI 升级后的回归清单见 [reference/regression.md](./reference/regression.md)。
 
 ## 触发规则
 
@@ -124,7 +223,7 @@ bdpan search "<query>" --json --agentname "claude-code" --session-input "用户�
 
 #### 删除规则（`rm`）
 
-`rm` 仅在用户明确提出删除意图时执行，不主动建议删除，并且必须先取得用户的明确确认。执行前必须：
+`rm` 不主动执行；可以在任务过程中建议删除，也可以由用户直接要求，但都必须先取得用户的明确确认。执行前必须：
 
 1. 核对目标路径明确、位于 `/apps/bdpan/` 范围内，并在需要时用 `bdpan ls --json` 区分文件和文件夹；
 2. 目标存在歧义、用户表达取消，或用户只是询问删除方法时，不执行 `rm`，应先澄清；
@@ -546,16 +645,26 @@ bash ${CLAUDE_SKILL_DIR}/scripts/install.sh [--yes]
 ```bash
 bash ${CLAUDE_SKILL_DIR}/scripts/login.sh              # 用户主动登录（成功后展示欢迎语）
 bash ${CLAUDE_SKILL_DIR}/scripts/login.sh --continue-task  # 原任务前置自动登录（成功后静默返回）
+bash ${CLAUDE_SKILL_DIR}/scripts/login.sh --issue-url      # 两步登录①：只打印授权链接
+bash ${CLAUDE_SKILL_DIR}/scripts/login.sh --complete < 授权码文件  # 两步登录②：从 stdin 提交授权码
 bdpan logout                                            # 注销
 bash ${CLAUDE_SKILL_DIR}/scripts/uninstall.sh [--yes]   # 卸载
 ```
 
+Agent 在非交互 shell 里使用两步模式：先向用户展示安全须知并取得确认 → `--issue-url` 拿到链接交给用户 → 用户完成浏览器授权后把 32 位授权码写入临时文件 → `--complete < 文件` 提交。不要使用 `--yes`。
+
 ### 更新（必须用户明确指令触发）
 
+本 fork 分轨更新，`update.sh` 不再下载官方 skill 包覆盖本目录：
+
 ```bash
-bash ${CLAUDE_SKILL_DIR}/scripts/update.sh              # 检查并更新（需用户确认）
-bash ${CLAUDE_SKILL_DIR}/scripts/update.sh --check       # 仅检查更新
+bash ${CLAUDE_SKILL_DIR}/scripts/update.sh              # 打印分轨更新指引与版本对比
+bash ${CLAUDE_SKILL_DIR}/scripts/update.sh --check       # 只读比较官方 skill 版本
 ```
+
+- 官方 skill 变更：在本仓库 `git fetch upstream && git merge upstream/main`；
+- `bdpan` CLI：保留官方渠道（`bdpan update`），升级后按 [reference/regression.md](./reference/regression.md) 回归；
+- MCP Server 由百度服务端维护。
 
 ---
 
@@ -609,3 +718,4 @@ bash ${CLAUDE_SKILL_DIR}/scripts/memory-backup.sh restore 2026-03-16 --force
 | [authentication.md](./reference/authentication.md) | 认证流程细节、Token 管理 |
 | [examples.md](./reference/examples.md) | 更多使用示例（批量上传、自动备份等） |
 | [troubleshooting.md](./reference/troubleshooting.md) | 遇到错误需要排查 |
+| [docs/maintenance/README.md](../../docs/maintenance/README.md) | 维护节奏、更新检查、MCP 工具比对、开放文档抓取、token 与 1Password 集成 |

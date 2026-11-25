@@ -1,329 +1,113 @@
 #!/bin/bash
-# baidu drive Skill 自动更新脚本
-# 通过百度配置接口检测并更新 Skill 文件
-# CLI 更新由 bdpan 自身管理，本脚本不负责
+# update.sh — 本 fork 的更新入口（分轨更新，不覆盖定制）
+#
+# 本脚本不再从百度配置接口下载官方 skill 包覆盖 skill 目录：
+# 官方包会把本 fork 的 SKILL.md、reference/、scripts/ 改动一并覆盖。
+#
+# 三类对象分开更新：
+#   官方 skill     → 本仓库 git fetch upstream && git merge upstream/main
+#   本 fork 定制   → 自己的 git 提交
+#   bdpan CLI     → 保留官方渠道（bdpan update / 官方安装器），升级后做最小回归
+#   MCP Server    → 百度服务端维护；工具清单变化时先对比再使用
+#
+# 用法:
+#   bash update.sh            打印当前版本与更新指引
+#   bash update.sh --check    只读查询官方 skill 版本，与本地 VERSION 比较
+#
+# --yes 被忽略：本 fork 禁止静默更新。
+set -u
 
-set -e
-
-# 颜色输出
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-CONFIG_API="https://pan.baidu.com/act/v2/api/conf?conf_key=bd_skills"
-
-# 脚本所在目录（用于定位 Skill 文件）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="${SKILL_DIR}/VERSION"
+CONFIG_API="https://pan.baidu.com/act/v2/api/conf?conf_key=bd_skills"
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+usage() {
+    cat >&2 <<'EOF'
+用法: bash update.sh [选项]
+
+选项:
+  --check, -c   只读查询官方 skill 版本并比较，不更新任何文件
+  --help, -h    显示帮助信息
+
+本 fork 的更新是分轨的：
+  官方 skill → git fetch upstream && git merge upstream/main
+  本 fork 定制 → 自己的 git 提交
+  bdpan CLI → 官方渠道（bdpan update），升级后按 reference/regression.md 回归
+  MCP Server → 百度服务端维护
+禁止用官方 skill 包覆盖本目录，禁止静默升级。
+EOF
 }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+local_version() {
+    if [ -f "$VERSION_FILE" ]; then tr -d '[:space:]' < "$VERSION_FILE"; else echo "unknown"; fi
 }
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# 版本比较：返回 0 表示 $1 > $2，1 表示 $1 = $2，2 表示 $1 < $2
-version_compare() {
-    if [ "$1" = "$2" ]; then
-        return 1
-    fi
-    local IFS=.
-    local i ver1=($1) ver2=($2)
-    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do
-        ver1[i]=0
-    done
-    for ((i=0; i<${#ver1[@]}; i++)); do
-        if [ -z "${ver2[i]}" ]; then
-            ver2[i]=0
-        fi
-        if ((10#${ver1[i]} > 10#${ver2[i]})); then
-            return 0
-        fi
-        if ((10#${ver1[i]} < 10#${ver2[i]})); then
-            return 2
-        fi
-    done
-    return 1
-}
-
-# 去除版本号的 v 前缀（如 v1.2.0 → 1.2.0）
-strip_v_prefix() {
-    echo "$1" | sed 's/^v//'
-}
-
-# 获取本地 Skill 版本
-get_local_version() {
-    if [ -f "$VERSION_FILE" ]; then
-        local raw=$(cat "$VERSION_FILE" | tr -d '[:space:]')
-        strip_v_prefix "$raw"
-    else
-        echo "unknown"
-    fi
-}
-
-# 从 query string 中提取指定 key 的值
-# 用法: query_get "version=1.1.2&url=https://..." "version"
-query_get() {
-    local qs="$1"
-    local key="$2"
-    echo "$qs" | tr '&' '\n' | while IFS='=' read -r k v; do
-        if [ "$k" = "$key" ]; then
-            echo "$v"
-            return 0
-        fi
-    done
-}
-
-# 请求配置接口，返回 skills_info query string
-fetch_skills_info() {
+fetch_official_version() {
     local response=""
-
-    if command -v curl &> /dev/null; then
-        response=$(curl -fsSL --connect-timeout 10 --max-time 30 "$CONFIG_API" 2>/dev/null) || {
-            log_error "无法连接配置服务器，请检查网络连接"
-            return 1
-        }
-    elif command -v wget &> /dev/null; then
-        response=$(wget -qO- --timeout=30 "$CONFIG_API" 2>/dev/null) || {
-            log_error "无法连接配置服务器，请检查网络连接"
-            return 1
-        }
+    if command -v curl >/dev/null 2>&1; then
+        response="$(curl -fsSL --connect-timeout 10 --max-time 30 "$CONFIG_API" 2>/dev/null)" || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        response="$(wget -qO- --timeout=30 "$CONFIG_API" 2>/dev/null)" || return 1
     else
-        log_error "未找到 curl 或 wget"
+        echo "update: curl/wget not found" >&2
         return 1
     fi
-
-    # 检查 errno：从 JSON 中提取 "errno": 0
-    local errno=$(echo "$response" | grep -o '"errno"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
-    if [ "$errno" != "0" ]; then
-        log_error "配置接口返回错误 (errno: ${errno:-unknown})"
-        return 1
-    fi
-
-    # 从 response 中提取 skills_info 的值
-    # API 返回中 & 可能被编码为 \u0026，需要还原
-    local skills_info=$(echo "$response" | sed 's/\\u0026/\&/g' | grep -o 'version=[^"]*' | head -1 | sed 's/\\//g')
-
-    if [ -z "$skills_info" ]; then
-        log_error "未获取到版本配置信息"
-        return 1
-    fi
-
-    echo "$skills_info"
+    printf '%s' "$response" | sed 's/\\u0026/\&/g' | grep -o 'version=[0-9][^"\\&]*' | head -1
 }
 
-# 更新 Skill
-do_update() {
-    local remote_url="$1"
-    local remote_version="$2"
+check_only="no"
+for arg in "$@"; do
+    case "$arg" in
+        --check|-c) check_only="yes" ;;
+        --yes|-y)   echo "update: 忽略 --yes（本 fork 禁止静默更新）" >&2 ;;
+        --help|-h)  usage; exit 0 ;;
+        *)          echo "update: 未知参数 $arg" >&2; usage; exit 2 ;;
+    esac
+done
 
-    if [ -z "$remote_url" ]; then
-        log_error "未找到 Skill 下载地址"
-        return 1
-    fi
+local="$(local_version)"
+echo "本地 skill 版本: ${local}"
 
-    log_info "正在下载 Skill 更新包 (v${remote_version})..."
-    log_info "下载地址: ${remote_url}"
-
-    # 创建临时目录
-    local tmp_dir=$(mktemp -d)
-    trap "rm -rf '$tmp_dir'" EXIT
-
-    # 下载 zip
-    local zip_path="${tmp_dir}/baidu-drive.zip"
-    if command -v curl &> /dev/null; then
-        curl -fsSL -o "$zip_path" "$remote_url" || {
-            log_error "下载 Skill 更新包失败"
-            return 1
-        }
-    elif command -v wget &> /dev/null; then
-        wget -q -O "$zip_path" "$remote_url" || {
-            log_error "下载 Skill 更新包失败"
-            return 1
-        }
-    fi
-
-    # SHA256 完整性校验（强制）
-    local checksum=$(query_get "$SKILLS_INFO" "checksum")
-    if [ -z "$checksum" ]; then
-        log_error "配置接口未提供 checksum，无法验证更新包完整性，拒绝更新"
-        return 1
-    fi
-
-    local actual=""
-    if command -v sha256sum &> /dev/null; then
-        actual=$(sha256sum "$zip_path" | awk '{print $1}')
-    elif command -v shasum &> /dev/null; then
-        actual=$(shasum -a 256 "$zip_path" | awk '{print $1}')
-    else
-        log_error "未找到 sha256sum/shasum 工具，无法验证更新包完整性"
-        return 1
-    fi
-
-    if [ "$actual" != "$checksum" ]; then
-        log_error "SHA256 校验失败！文件可能被篡改"
-        log_error "  期望: ${checksum}"
-        log_error "  实际: ${actual}"
-        return 1
-    fi
-    log_info "SHA256 校验通过"
-
-    # 解压覆盖
-    log_info "正在解压更新..."
-    if command -v unzip &> /dev/null; then
-        unzip -qo "$zip_path" -d "$SKILL_DIR" || {
-            log_error "解压失败"
-            return 1
-        }
-    else
-        log_error "未找到 unzip 工具"
-        return 1
-    fi
-
-    # 更新 VERSION 文件
-    echo "$remote_version" > "$VERSION_FILE"
-
-    log_info "Skill 已更新到 v${remote_version}"
+info="$(fetch_official_version)" || {
+    echo "update: 无法读取官方版本（网络不可用）" >&2
+    exit 1
 }
+official="${info#version=}"
+if [ -z "$official" ]; then
+    echo "update: 配置接口没有返回版本" >&2
+    exit 1
+fi
+echo "官方 skill 版本: ${official}"
+if [ "$official" = "$local" ]; then
+    echo "状态: 官方版本与本 fork 相同"
+else
+    echo "状态: 官方版本与本地不同；本 fork 有独立改动，禁止用官方包覆盖"
+fi
 
-# 全局变量
-SKILLS_INFO=""
+if [ "$check_only" = "yes" ]; then
+    exit 0
+fi
 
-# 主函数
-main() {
-    local check_only="no"
-    local auto_yes="no"
+cat <<'EOF'
 
-    # 解析参数
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --check|-c)
-                check_only="yes"
-                shift
-                ;;
-            --yes|-y)
-                auto_yes="yes"
-                shift
-                ;;
-            --help|-h)
-                echo "用法: $0 [选项]"
-                echo ""
-                echo "选项:"
-                echo "  --check, -c   仅检查更新，不执行"
-                echo "  --yes, -y     跳过确认，自动更新"
-                echo "  --help        显示帮助信息"
-                exit 0
-                ;;
-            *)
-                log_error "未知参数: $1"
-                echo "使用 --help 查看帮助信息"
-                exit 1
-                ;;
-        esac
-    done
+更新指引（分轨）：
 
-    # 获取本地版本
-    local local_version=$(get_local_version)
+1. 官方 skill（上游变更）——在本仓库执行：
+     git fetch upstream
+     git merge upstream/main
+   SKILL.md / scripts 出现冲突时逐项复核：本 fork 的全盘章节、
+   bdpanw.sh、staging.sh、mcp-token.sh 不能被覆盖掉。
 
-    # 请求远程配置
-    log_info "正在检查更新..."
-    SKILLS_INFO=$(fetch_skills_info) || {
-        log_warn "无法获取更新信息，请稍后再试"
-        exit 1
-    }
+2. 本 fork 的定制——走自己的 git 提交。
 
-    # 解析远程版本和下载地址（strip v 前缀用于比较）
-    local remote_version=$(query_get "$SKILLS_INFO" "version")
-    local remote_version_clean=$(strip_v_prefix "$remote_version")
-    local remote_url=$(query_get "$SKILLS_INFO" "url")
+3. bdpan CLI——保留官方渠道（bdpan update 或官方安装器）：
+     bdpan update check
+     bdpan update
+   升级后按 reference/regression.md 做最小回归：
+     whoami / ls 空目录 / 越界路径 / 上传下载 md5 / 同名上传 / 搜索 / 读正文
 
-    if [ -z "$remote_version" ]; then
-        log_error "配置中未包含版本信息"
-        exit 1
-    fi
+4. MCP Server——百度服务端维护；工具清单变化时，先用 tools/list 对比再使用。
 
-    # 展示状态
-    echo ""
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}  baidu drive Skill 更新检查${NC}"
-    echo -e "${BLUE}========================================${NC}"
-    echo ""
-    echo -e "  本地版本: ${local_version}"
-    echo -e "  最新版本: ${remote_version}"
-
-    # 版本对比
-    local needs_update="no"
-    if [ "$local_version" = "unknown" ]; then
-        echo -e "  状态:     ${YELLOW}版本未知，建议更新${NC}"
-        needs_update="yes"
-    else
-        set +e
-        version_compare "$remote_version_clean" "$local_version"
-        local cmp_result=$?
-        set -e
-
-        if [ $cmp_result -eq 0 ]; then
-            echo -e "  状态:     ${YELLOW}有新版本可用${NC}"
-            needs_update="yes"
-        else
-            echo -e "  状态:     ${GREEN}已是最新${NC}"
-        fi
-    fi
-
-    echo ""
-
-    # 无更新
-    if [ "$needs_update" = "no" ]; then
-        log_info "Skill 已是最新版本"
-        exit 0
-    fi
-
-    # 仅检查模式
-    if [ "$check_only" = "yes" ]; then
-        exit 0
-    fi
-
-    # 用户确认
-    # 安全限制：Agent 环境中禁止使用 --yes 跳过确认
-    if [ "$auto_yes" = "yes" ]; then
-        if [ -n "$CLAUDE_CODE" ] || [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$MCP_SERVER" ]; then
-            log_warn "检测到 Agent 环境，忽略 --yes 参数，保留用户确认环节"
-            auto_yes="no"
-        fi
-    fi
-    if [ "$auto_yes" != "yes" ]; then
-        echo -n -e "${YELLOW}是否更新 Skill 到 v${remote_version}? [y/N] ${NC}"
-        read -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "已取消更新"
-            exit 0
-        fi
-    fi
-
-    echo ""
-
-    # 执行更新
-    do_update "$remote_url" "$remote_version" || {
-        log_error "Skill 更新失败"
-        exit 1
-    }
-
-    echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  ✓ 更新完成${NC}"
-    echo -e "${GREEN}========================================${NC}"
-    echo ""
-}
-
-# 执行主函数
-main "$@"
+禁止：用官方 skill 包覆盖本目录；静默升级 CLI；在没有回归的情况下换 CLI 版本。
+EOF

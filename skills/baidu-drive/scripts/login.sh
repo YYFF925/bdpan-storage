@@ -14,6 +14,8 @@ NC='\033[0m' # No Color
 # 解析参数
 SKIP_CONFIRM="no"
 SHOW_WELCOME="yes"
+ISSUE_URL_ONLY="no"
+COMPLETE_ONLY="no"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --yes|-y)
@@ -25,12 +27,25 @@ while [[ $# -gt 0 ]]; do
             SHOW_WELCOME="no"
             shift
             ;;
+        --issue-url)
+            # 两步登录的第一步：只获取并打印授权链接，授权码稍后用 --complete 提交。
+            # 供 Agent 在非交互 shell 中使用：确认环节已由 Agent 在对话中完成。
+            ISSUE_URL_ONLY="yes"
+            shift
+            ;;
+        --complete)
+            # 两步登录的第二步：从 stdin 读取授权码并完成登录。
+            COMPLETE_ONLY="yes"
+            shift
+            ;;
         --help|-h)
             echo "用法: $0 [选项]"
             echo ""
             echo "选项:"
             echo "  --yes, -y    跳过安全确认（自动化场景）"
             echo "  --continue-task  登录成功后不输出欢迎语，供原任务继续执行"
+            echo "  --issue-url  只获取并打印授权链接，不读取授权码（供 Agent 两步登录）"
+            echo "  --complete   从 stdin 读取授权码并完成登录（供 Agent 两步登录）"
             echo "  --help       显示帮助信息"
             exit 0
             ;;
@@ -39,6 +54,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$ISSUE_URL_ONLY" = "yes" ] && [ "$COMPLETE_ONLY" = "yes" ]; then
+    echo "错误: --issue-url 与 --complete 不能同时使用" >&2
+    exit 1
+fi
 
 log_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
@@ -107,14 +127,17 @@ log_info "检查登录状态..."
 BDPAN_VERSION=$(bdpan version 2>/dev/null | head -1 || echo "unknown")
 
 if bdpan whoami 2>/dev/null | grep -q "已登录"; then
-    # 用户主动登录时给出可执行的场景提示；原任务前置登录保持静默。
-    if [ "$SHOW_WELCOME" = "yes" ]; then
-        print_already_logged_welcome
+    if [ "$COMPLETE_ONLY" != "yes" ]; then
+        # 用户主动登录时给出可执行的场景提示；原任务前置登录保持静默。
+        if [ "$SHOW_WELCOME" = "yes" ]; then
+            print_already_logged_welcome
+        fi
+        exit 0
     fi
-    exit 0
+    log_info "当前已登录；--complete 将用新的授权码覆盖现有登录"
+else
+    log_info "未登录，开始 OOB 授权流程..."
 fi
-
-log_info "未登录，开始 OOB 授权流程..."
 
 # 首次安全登录依赖三个非交互参数，进入授权流程前一次性完成能力检查
 LOGIN_HELP=$(bdpan login --help 2>&1 || true)
@@ -130,6 +153,32 @@ if [ -n "$MISSING_FLAGS" ]; then
     log_error "当前 bdpan 版本: ${BDPAN_VERSION}"
     log_error "请先升级后重试: bash scripts/install.sh --force"
     exit 1
+fi
+
+# 两步登录的第二步：授权码从 stdin 读取，适用于 Agent 的非交互 shell。
+# 确认环节由 Agent 在对话中完成；本分支不打印免责声明、不获取授权链接。
+if [ "$COMPLETE_ONLY" = "yes" ]; then
+    log_info "从标准输入读取授权码..."
+    AUTH_CODE="$(head -n 1 | tr -d ' \t\r\n')"
+    if [ -z "$AUTH_CODE" ]; then
+        fail_login "授权码不能为空（请通过 stdin 传入一行授权码）"
+    fi
+    if [[ ! "$AUTH_CODE" =~ ^[a-fA-F0-9]{32}$ ]]; then
+        fail_login "授权码格式不正确（应为 32 位十六进制字符），请确认复制完整"
+    fi
+    log_info "正在使用授权码完成登录..."
+    if ! LOGIN_ERROR=$(printf '%s\n' "$AUTH_CODE" | bdpan login --set-code-stdin --accept-disclaimer 2>&1); then
+        LOGIN_ERROR=${LOGIN_ERROR//$AUTH_CODE/[授权码已隐藏]}
+        unset AUTH_CODE
+        fail_login "$LOGIN_ERROR"
+    fi
+    unset LOGIN_ERROR AUTH_CODE
+    WHOAMI_OUTPUT=""
+    if WHOAMI_OUTPUT=$(bdpan whoami 2>&1) && printf '%s\n' "$WHOAMI_OUTPUT" | grep -q "已登录"; then
+        log_info "✓ 登录成功！"
+        exit 0
+    fi
+    fail_login "$WHOAMI_OUTPUT"
 fi
 
 # 安全免责声明
@@ -153,8 +202,8 @@ echo -e "${RED}└────────────────────�
 echo ""
 
 # 用户确认
-if [ "$SKIP_CONFIRM" = "yes" ]; then
-    log_info "自动模式，跳过安全确认"
+if [ "$SKIP_CONFIRM" = "yes" ] || [ "$ISSUE_URL_ONLY" = "yes" ]; then
+    log_info "跳过终端确认（Agent 已在对话中取得用户确认）"
 else
     echo -n -e "${YELLOW}已阅读上述安全须知，确认继续登录? [y/N] ${NC}"
     read -n 1 -r
@@ -218,6 +267,12 @@ echo -e "${YELLOW}3. 授权成功后，浏览器会显示一个 32 位授权码$
 echo -e "${YELLOW}4. 请复制授权码并粘贴到下方${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
+
+# 两步登录的第一步到此处结束：链接已打印，授权码由后续 --complete 提交。
+if [ "$ISSUE_URL_ONLY" = "yes" ]; then
+    log_info "授权链接已输出。授权码请通过: bash scripts/login.sh --complete < 授权码文件"
+    exit 0
+fi
 
 # 提示用户输入授权码
 echo -n "请输入浏览器中显示的授权码 (32 位十六进制字符): "

@@ -1,0 +1,53 @@
+# bdpan CLI surface this fork depends on
+# Baseline: bdpan 3.8.9, captured 2026-11-25.
+# Re-check after any CLI upgrade. A missing item is version drift, not a reason to guess.
+# Verify with: bash skills/baidu-drive/scripts/bdpanw.sh <command> --help
+# (bdpanw.sh adds --json and --no-check-update automatically for real calls.)
+
+[commands]
+whoami            # authenticated, expires_at, has_valid_token, is_svip
+version
+quota             # total_bytes, used_bytes, free_bytes, usage_percent, *_display, expire
+vip
+ls                # array; fsid/fs_id, path, size, return_markdown, return_url
+search            # items[]; return_markdown
+search-content    # data.hits[]; file_url (no return_markdown)
+get-content       # data[]; content / task_id, return_markdown
+get-content-result
+upload            # action, saved_path, size
+download
+mv
+cp
+rename
+mkdir
+rm                # --force; recursive for folders
+share             # --period 0|1|7|30
+transfer          # plus: transfer list, transfer select
+vip
+
+[flags]
+--json
+--no-check-update
+--overwrite                 # upload, single file only
+--force                     # rm
+--period                    # share
+--category --page --page-size --no-dir --dir-only
+--order --desc --folder     # ls
+--dir --dir-fsid            # search-content
+--page-start --page-end     # get-content (single Word/PDF/PPT)
+--agentname --session-input --session-id
+--uid --traceid
+
+[json]
+envelope: code | status | errno | authenticated | data | error | show_msg
+upload: data.action = created | renamed | overwritten | unchanged
+upload: data.saved_path, data.size
+ls: fsid (compat fs_id), path, size, md5 (NON-standard, do not compare with local md5sum)
+whoami: expires_at, has_valid_token, is_svip
+get-content: status (running | succeeded | partial | failed), task_id, content, url
+transfer: task_id, status = submitted, files[].saved_path
+
+[wrapper_contract]
+`bdpanw.sh` treats an array as success; otherwise code==0, status in {ok, submitted},
+errno==0, or authenticated==true. It special-cases version/logout/completion/install/update
+to trust the exit code. If a new command returns a different envelope, fix the wrapper first.

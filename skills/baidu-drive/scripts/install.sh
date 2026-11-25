@@ -239,15 +239,33 @@ main() {
     # 清理安装器
     rm -f "${installer_name}"
 
+    # Windows：安装器把 CLI 写到 %LOCALAPPDATA%\bdpan 并把该目录写入用户 PATH（注册表），
+    # 但当前这个 shell 看不到注册表变更。这里临时补进 PATH，让校验和版本注册能执行。
+    if [ "$os" = "windows" ] && ! command -v bdpan &> /dev/null; then
+        for candidate in "${LOCALAPPDATA:-}/bdpan/bdpan.exe" "${HOME}/AppData/Local/bdpan/bdpan.exe"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+                export PATH="$(dirname "$candidate"):${PATH}"
+                break
+            fi
+        done
+    fi
+
     # 验证安装
     log_info "验证安装..."
     if command -v bdpan &> /dev/null; then
-        local installed_version=$(bdpan version 2>/dev/null | head -1 || echo "unknown")
+        local bdpan_bin
+        bdpan_bin="$(command -v bdpan)"
+        local installed_version=$("$bdpan_bin" version 2>/dev/null | head -1 || echo "unknown")
         log_info "✓ bdpan CLI 安装成功！(版本: ${installed_version})"
 
         # 注册到版本管理系统，使 bdpan update 能正常工作
         log_info "注册到版本管理系统..."
-        bdpan install --force 2>/dev/null || log_warn "版本注册跳过（不影响使用）"
+        "$bdpan_bin" install --force 2>/dev/null || log_warn "版本注册跳过（不影响使用）"
+
+        # Windows：bdpan install 生成的启动文件没有 .exe 后缀，PowerShell/cmd 找不到。
+        if [ "$os" = "windows" ] && [ -f "$HOME/.local/bin/bdpan" ] && [ ! -f "$HOME/.local/bin/bdpan.exe" ]; then
+            cp "$HOME/.local/bin/bdpan" "$HOME/.local/bin/bdpan.exe" 2>/dev/null && log_info "已补充 bdpan.exe 启动文件"
+        fi
 
         echo ""
 
@@ -270,10 +288,18 @@ main() {
         echo -e "${RED}└──────────────────────────────────────────────────────────────┘${NC}"
         echo ""
 
+        if [ "$os" = "windows" ]; then
+            log_warn "Windows：请重启当前终端以及已运行的编辑器（如 ZCode），才能看到安装器写入的用户 PATH。"
+        fi
+
         print_install_welcome
     else
-        log_error "安装失败，请检查 PATH 是否包含 ~/.local/bin"
-        echo "可以手动添加: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        log_error "安装失败：未找到 bdpan 可执行文件"
+        if [ "$os" = "windows" ]; then
+            echo "如果安装器已成功，请重启终端后重试，或把 %LOCALAPPDATA%\\bdpan 加入 PATH"
+        else
+            echo "可以手动添加: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        fi
         exit 1
     fi
 }
