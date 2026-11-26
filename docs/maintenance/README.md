@@ -32,8 +32,8 @@
 
 | 项 | 值 |
 |---|---|
-| skill `VERSION` | 1.7.7 |
-| `bdpan` CLI | 3.8.9 |
+| skill `VERSION` | 1.7.8（2026-11-25 合并上游 `baidu-drive/v1.7.8`；本 fork 的 VERSION 跟上游走） |
+| `bdpan` CLI | 本机 3.8.9。1.7.8 的登录流程要求 ≥ 3.9.0：3.8.9 上业务命令可用，但不能重新登录。3.9.0 的路径只按上游文档用假 CLI 测过包装脚本，**尚未在真 CLI 上回归** |
 | MCP 工具数 | 25（基线文件：[contracts/mcp-tools.baseline.json](./contracts/mcp-tools.baseline.json)） |
 | 开放平台文档 | 292 页（2026-11-25 抓取；WeKnora 库 `4b967e84-4ead-4861-9e27-aaf4cf91a62b`） |
 | MCP token 签发 | 2026-11-25T14:48:41（本地记录），30 天后到期；详见 [token.md](./token.md) |
@@ -54,7 +54,9 @@
 | [tools/mcp-call.mjs](./tools/mcp-call.mjs) | 只读 MCP 维护客户端（维护用，不被 skill 加载） |
 | [tools/compare-mcp-tools.mjs](./tools/compare-mcp-tools.mjs) | 两份工具清单的差异比较 |
 | [tools/scrape-union-docs.mjs](./tools/scrape-union-docs.mjs) | 开放平台文档抓取 |
+| [tools/test-bdpanw.sh](./tools/test-bdpanw.sh) | `bdpanw.sh` 的离线测试（不联网、不碰网盘），配 [tools/bdpanw-mock/](./tools/bdpanw-mock/) 里的假 CLI |
 | [contracts/mcp-tools.baseline.json](./contracts/mcp-tools.baseline.json) | 25 个 MCP 工具的参数基线 |
+| [contracts/cli-surface.txt](./contracts/cli-surface.txt) | 本 fork 依赖的 CLI 命令、参数与 JSON 字段 |
 
 ## 边界
 

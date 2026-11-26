@@ -6,6 +6,14 @@
 - 合并 upstream 之后；
 - 修改 `bdpanw.sh` / `staging.sh` / `mcp-token.sh` / `SKILL.md` 之后。
 
+改过 `bdpanw.sh` 先跑它的离线测试（不联网、不碰网盘）：
+
+```bash
+bash docs/maintenance/tools/test-bdpanw.sh
+```
+
+它用假 CLI 验证包装脚本加了哪些参数、怎么判成败；**不能替代下面针对真 CLI 的回归**。
+
 在 Hermes 终端里跑时，交给 `jq`、`node` 等原生程序的本机路径要写 Windows 风格（Hermes 默认设了 `MSYS_NO_PATHCONV=1`），见 `reference/hosts/hermes.md`。
 
 ## 0. 记录版本
@@ -18,15 +26,18 @@ bash <SKILL_DIR>/scripts/bdpanw.sh version
 #      以 `hermes mcp test baidu-netdisk` 列出的 25 个为准
 ```
 
-把 Skill 版本、CLI 版本、MCP 工具清单记在一起，便于回退判断。
+把 Skill 版本、CLI 版本、MCP 工具清单记在一起，便于回退判断。1.7.8 起**登录**要求 CLI ≥ 3.9.0：CLI 3.8.x 上第 1 节起的业务检查照常可跑，登录类检查只能验证脚本的拒绝分支；授权参数和授权中断的判定由上面的离线测试覆盖（2026-11-25 时真 CLI 3.9.0 尚未回归）。
 
 ## 1. 基础
 
 | 检查 | 命令 | 期望 |
 |---|---|---|
-| 登录态 | `bdpanw.sh whoami` | `authenticated: true`，退出 0 |
+| 登录态 | `bdpanw.sh whoami` | `authenticated: true`，退出 0（3.9.0 上还应 `has_valid_token: true`） |
 | 版本 | `bdpanw.sh version` | 文本输出，退出 0 |
 | 容量 | `bdpanw.sh quota` | `code: 0`，退出 0 |
+| 帮助 | `bdpanw.sh quota --help` | 帮助文本，退出 0 |
+| 登录脚本 | `bash <SKILL_DIR>/scripts/login.sh --yes` | 退出 1（旧 `--yes` 被拒），不发起登录 |
+| 登录脚本（CLI 3.8.x） | `bash <SKILL_DIR>/scripts/login.sh` | stderr 为“当前 CLI 未提供统一授权入口”，退出 1 |
 
 ## 2. 路径与边界
 

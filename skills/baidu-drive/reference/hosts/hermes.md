@@ -90,6 +90,7 @@ mcp_servers:
   - 本机 PATH 上有 `jq`、`node`、`bdpan`、`cygpath`、`hermes`，`python` 是 Hermes 的 venv 解释器；换机器先用 `command -v` 确认。
 - `HERMES_SESSION_ID` 在终端里已设置；`bdpanw.sh` 用它在同一会话里复用 `--session-id`，并上报 `--agentname hermes`。
 - 一次性任务（`hermes -z "<prompt>"`）没有交互确认通道，审批自动放行。删除确认协议靠用户在对话里的明确答复：实测“只问方法”时 Hermes 不动任何文件，收到明确许可后按七步流程执行。给 Hermes 派一次性任务时，把允许写入的范围和允许删除的对象写进任务本身。
+- 登录脚本 `login.sh` 用 `python3`、`python` 或 `node` 校验 CLI 返回的登录结果。Hermes 终端里 `python` 就是它的 venv 解释器，可用；Windows 系统的 `python3` 常是应用商店的占位程序，脚本会跳过它。主动登录的安全确认必须在对话里完成（`login.sh --confirmed`），一次性任务里没有这个通道，所以登录要在交互会话里做。合并上游 1.7.8 之后这条路径没有在 Hermes 里实测。
 
 ## 8. 不要做的事
 

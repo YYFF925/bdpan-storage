@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Mock of a bdpan CLI that implements upstream 1.7.8's unified auth entry (the real one is 3.9.0+).
+# No network, no drive: it only checks how the skill's wrapper calls the CLI and answers with canned
+# payloads. Used by docs/maintenance/tools/test-bdpanw.sh; never put it on PATH outside that script.
+#
+# Behaviour, following upstream reference/authentication.md:
+#   * every call except management commands and --help must carry
+#       --auth-flow cli --skill-name baidu-drive --skill-version <MOCK_SKILL_VERSION>
+#     otherwise the CLI answers with its "old skill" message and exits 1;
+#   * with MOCK_AUTH set it answers with an authorization interruption instead:
+#       MOCK_SHAPE=data  {"code":MOCK_CODE,"data":{"status":MOCK_AUTH}}     (exit MOCK_RC)
+#       MOCK_SHAPE=flat {"status":MOCK_AUTH,"auth_url":...}                 (exit MOCK_RC)
+#   * every invocation is appended to $MOCK_LOG.
+printf '%s\n' "$*" >> "${MOCK_LOG:-/dev/null}"
+case "${1:-}" in
+  login) echo '  --auth-flow <flow>   unified auth entry'; echo '  --auth-confirmed'; exit 0;;
+esac
+for arg in "$@"; do
+  if [ "$arg" = --help ] || [ "$arg" = -h ]; then echo "usage: bdpan <command> [flags]"; exit 0; fi
+done
+case "${1:-}" in
+  version) echo "bdpan: 3.9.0"; exit 0;;
+  logout|install|update) exit 0;;
+esac
+has_pair() {                 # has_pair <flag> <value> <args...>: is "<flag> <value>" among the args?
+  local flag="$1" value="$2" i next
+  for ((i = 3; i < $#; i++)); do
+    next=$((i + 1))
+    if [ "${!i}" = "$flag" ] && [ "${!next}" = "$value" ]; then return 0; fi
+  done
+  return 1
+}
+if ! has_pair --auth-flow cli "$@" || ! has_pair --skill-name baidu-drive "$@" \
+   || ! has_pair --skill-version "${MOCK_SKILL_VERSION:-v0}" "$@"; then
+  echo '当前使用的是旧版百度网盘 Skill，授权流程已升级。需升级 Skill: 百度网盘 baidu-drive ≥ v1.7.8' >&2
+  exit 1
+fi
+if [ -n "${MOCK_AUTH:-}" ]; then
+  case "${MOCK_SHAPE:-data}" in
+    data) printf '{"code":%s,"data":{"status":"%s","message":"mock"},"error":"mock"}\n' "${MOCK_CODE:-1}" "$MOCK_AUTH";;
+    flat) printf '{"status":"%s","auth_url":"https://example.invalid/a","examples":["1","2","3","4","5"]}\n' "$MOCK_AUTH";;
+  esac
+  exit "${MOCK_RC:-1}"
+fi
+case "${1:-}" in
+  whoami) printf '{"authenticated": true, "has_valid_token": true, "expires_at": "2026-12-25T00:00:00+08:00"}\n';;
+  ls)
+    if [ -n "${MOCK_EMPTY_DIR:-}" ]; then
+      printf '[{"server_filename":"x","isdir":true,"path":"/apps/bdpan/x","fsid":"9","size":0,"md5":"","return_markdown":"[x](u)"}]\n'
+    else
+      printf '[{"server_filename":"a.txt","isdir":false,"path":"/apps/bdpan/%s/a.txt","fsid":"1","size":3,"md5":"m","return_markdown":"[a](u)"}]\n' "${2:-x}"
+    fi;;
+  mkdir|rm|cp|mv|rename) printf '{"status":"ok"}\n';;
+  upload|download) printf '{"code":0,"data":{"action":"created"},"error":""}\n';;
+  get-content) printf '{"code":0,"data":[{"content":"hi"}],"error":""}\n';;
+  *) printf '{"code":0,"data":{},"error":""}\n';;
+esac

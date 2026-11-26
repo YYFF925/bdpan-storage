@@ -27,24 +27,35 @@ bash skills/baidu-drive/scripts/update.sh --check      # 官方 conf_key 里的 
 
 ### 合并
 
+ZCode 和 Hermes 读的都是本仓库的工作区，所以先在独立的 worktree 里合并，实时工作区只接受最终结果：
+
 ```bash
-git merge upstream/main
+git merge-tree --write-tree --name-only HEAD upstream/main     # 预演：只列出会冲突的文件
+git -c core.autocrlf=false worktree add -b merge-upstream-<版本> <临时目录>
+git -C <临时目录> -c core.autocrlf=false merge --no-commit --no-ff upstream/main
+# 解决冲突、跑回归、提交，然后：
+git merge --ff-only merge-upstream-<版本>
+git worktree remove <临时目录> && git branch -d merge-upstream-<版本>
 ```
 
-预期冲突只有两类：
+到目前为止出现过的冲突：
 
 | 文件 | 原因 | 处理 |
 |---|---|---|
 | `skills/baidu-drive/scripts/update.sh` | 本 fork 有意重写（停用官方包覆盖，改分轨更新） | **保留本 fork 版本**；如果上游新增了版本检查逻辑，手工把有价值的部分并进来 |
-| `skills/baidu-drive/SKILL.md` | 本 fork 改了 description 和“全盘管理”章节 | 保留本 fork 的 frontmatter 与全盘章节；上游对原有规则行的修正照收 |
+| `skills/baidu-drive/SKILL.md` | 本 fork 改了 frontmatter 和“全盘管理”章节 | 保留本 fork 的 frontmatter 与全盘章节；上游对原有规则行的修正照收 |
+| `skills/baidu-drive/scripts/login.sh` | 上游 1.7.8 整个重写（统一授权入口）；本 fork 加过两步登录 | 取上游版本——fork 的两步登录服务的是已被淘汰的旧流程。取完检查 Windows：上游用 `python3` 或 `node` 校验登录结果，而 Windows 的 `python3` 常是应用商店的占位程序，本 fork 改成逐个试到真正能用的解释器 |
+| `skills/baidu-drive/scripts/install.sh` | 上游 1.7.8 加了 CLI 最低版本校验；本 fork 修过 Windows 的路径处理与 `.exe` 启动文件 | 两种修复都保留：用 fork 解析出的可执行路径去注册和校验，保留 `.exe` 补丁 |
 
-其他文件（`reference/bdpan-commands.md`、`install.sh`、`login.sh` 等）优先接受上游；`login.sh` / `install.sh` 如果上游也修了同一处，合并后以“两种修复都保留”为目标，无法兼容时以本 fork 的 Windows / 非交互行为为准，并在提交说明里写清。
+其他文件（`reference/bdpan-commands.md` 等）优先接受上游；`login.sh` / `install.sh` 如果上游也修了同一处，合并后以“两种修复都保留”为目标，无法兼容时以本 fork 的 Windows / 非交互行为为准，并在提交说明里写清。
 
 **禁止** `git merge -X ours`、`git checkout --ours` 整文件丢弃上游。合并后：
 
-1. 跑 [regression.md](../../skills/baidu-drive/reference/regression.md)；
-2. 更新 [README.md](./README.md) 的基线表；
-3. 检查 `VERSION` 是否需要跟上游同步（本 fork 的 VERSION 跟上游走，不单独编号）。
+1. 对照上游新的调用约定检查 `bdpanw.sh`：上游改了 Agent 必传的参数时，包装脚本要跟着改（1.7.8 起每条命令都要带 `--auth-flow cli --skill-name baidu-drive --skill-version <VERSION>`），改完跑 `bash docs/maintenance/tools/test-bdpanw.sh`；
+2. 搜一遍旧流程的残留：`grep -rn -E -- '--issue-url|--complete|--get-auth-url|--set-code' skills/baidu-drive docs/maintenance`；
+3. 跑 [regression.md](../../skills/baidu-drive/reference/regression.md)；
+4. 更新 [README.md](./README.md) 的基线表和 [contracts/cli-surface.txt](./contracts/cli-surface.txt)；
+5. 检查 `VERSION` 是否需要跟上游同步（本 fork 的 VERSION 跟上游走，不单独编号）。
 
 ### 发布渠道
 
@@ -58,7 +69,7 @@ GitHub 仓库右侧 **Watch → Custom → Releases** 订阅 upstream 的 releas
 bash skills/baidu-drive/scripts/bdpanw.sh version
 ```
 
-当前基线 3.8.9（skill 1.7.7 的配套版本）。CLI 是闭源二进制，版本变化可能带来参数和 JSON 变化。
+本机 3.8.9。skill 1.7.8 的登录流程要求 ≥ 3.9.0：3.8.9 上业务命令可用，但不能重新登录。`bdpanw.sh` 只在 CLI 支持 `--auth-flow` 时才附加统一授权参数，所以两种版本都能跑。CLI 是闭源二进制，版本变化可能带来参数和 JSON 变化。
 
 ### 更新
 

@@ -5,8 +5,10 @@
 #   * locate the bdpan binary
 #   * hand remote paths to the CLI verbatim under Git Bash, convert local paths
 #   * add the public telemetry parameters (policy: minimal by default)
+#   * add the unified-auth parameters the CLI requires from 3.9.0 (skill name and version)
 #   * force --json and --no-check-update
-#   * turn the CLI's inconsistent output into a reliable exit status
+#   * turn the CLI's inconsistent output into a reliable exit status; an interrupted
+#     authorization exits non-zero instead of looking like an empty result
 #   * fix `ls` of an empty directory (the CLI prints the directory itself)
 #
 # Out of scope: MCP sessions, retries, and deciding whether a failed write really
@@ -25,6 +27,9 @@ usage: bash bdpanw.sh <bdpan-subcommand> [args...]
 
 Runs one bdpan CLI command with the flags and path handling this skill needs.
 Adds --json and --no-check-update unless they are already present.
+On CLI >= 3.9.0 also adds --auth-flow cli --skill-name baidu-drive --skill-version <VERSION>
+(read from the skill's VERSION file); --auth-confirmed is yours to pass when the user
+has confirmed the safety notice in this session.
 
 BDPANW_TELEMETRY: minimal (default) | full | none
   minimal  --agentname + --session-id
@@ -99,6 +104,34 @@ agent_name() {
   else printf 'baidu-drive\n'; fi
 }
 
+# CLI 3.9.0+ takes every call through the unified auth entry and needs the skill's name and
+# version for it; older CLIs reject those flags. The binary is probed once and the answer is
+# kept under the state directory, keyed by the binary's size and mtime so an upgrade re-probes.
+supports_auth_flow() {
+  local cache identity recorded
+  identity="$(stat -c '%s:%Y' "$BIN" 2>/dev/null || stat -f '%z:%m' "$BIN" 2>/dev/null || printf '?')"
+  cache="$(state_dir)/cli-auth-flow"
+  if [ "$identity" != '?' ]; then
+    recorded="$(head -n 1 "$cache" 2>/dev/null || true)"
+    case "$recorded" in
+      "$identity yes") return 0;;
+      "$identity no") return 1;;
+    esac
+  fi
+  if "$BIN" login --help --no-check-update 2>/dev/null | grep -q -- '--auth-flow'; then
+    answer=yes
+  else
+    answer=no
+  fi
+  # A state directory that cannot be created only costs a probe on every call.
+  { mkdir -p "$(state_dir)" && printf '%s %s\n' "$identity" "$answer" >"$cache"; } 2>/dev/null || true
+  [ "$answer" = yes ]
+}
+
+skill_version() {
+  tr -d '[:space:]' <"$(cd "$(dirname "$0")/.." && pwd)/VERSION" 2>/dev/null || true
+}
+
 # Local paths must reach the native binary in Windows form when Git Bash is in use.
 to_native_local() {
   local path="$1"
@@ -114,6 +147,7 @@ to_native_local() {
 takes_value() {
   case "$1" in
     --agentname|--session-id|--session-input|--uid|--traceid|--config-path|--anonymous-id|\
+    --auth-flow|--skill-name|--skill-version|\
     -p|--pwd|-d|--dir|-t|--transfer-dir|--period|--category|--page|--page-size|--start|\
     --limit|--order|--dir-fsid|--file-types|--fsid|--page-start|--page-end|--source-dir)
       return 0;;
@@ -159,6 +193,18 @@ if [ "$TELEMETRY" != "none" ]; then
     has_arg --session-input "${args[@]}" || args+=(--session-input "$BDPANW_SESSION_INPUT")
   fi
 fi
+
+# Local management commands and --help say nothing about authorization; everything else goes
+# through the unified auth entry on CLIs that have one (the caller may add --auth-confirmed).
+needs_auth=1
+case "$command_name" in version|logout|completion|install|update) needs_auth=0;; esac
+wants_help=0
+if has_arg -h "${args[@]}" || has_arg --help "${args[@]}"; then wants_help=1; needs_auth=0; fi
+if [ "$needs_auth" = 1 ] && ! has_arg --auth-flow "${args[@]}" && supports_auth_flow; then
+  SKILL_VERSION="$(skill_version)"
+  [ -n "$SKILL_VERSION" ] || { echo "bdpanw: the skill's VERSION file is empty, but the CLI needs it for --skill-version" >&2; exit 2; }
+  args+=(--auth-flow cli --skill-name baidu-drive --skill-version "$SKILL_VERSION")
+fi
 has_arg --json "${args[@]}" || args+=(--json)
 has_arg --no-check-update "${args[@]}" || args+=(--no-check-update)
 
@@ -198,32 +244,52 @@ fi
 
 if [ -n "$out" ]; then printf '%s\n' "$out"; fi
 
-# Success is judged from the payload because the CLI exits 0 for server-side errors.
+# An authorization the CLI could not complete means the command did not run at all.
+auth_interrupted() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$out" | jq -e '
+      ((.data | objects | .status) // (.status | strings) // "") as $s
+      | type == "object"
+      and ($s == "confirmation_required" or $s == "authorization_required" or $s == "upgrade_required")' >/dev/null 2>&1
+  else
+    printf '%s' "$out" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"(confirmation_required|authorization_required|upgrade_required)"'
+  fi
+}
+
+# Success is judged from the payload because the CLI exits 0 for server-side errors. Help text
+# and local management commands print no payload, so there the CLI's own exit status is taken.
 verdict=1
-case "$command_name" in
-  version|logout|completion|install|update)
-    [ "$rc" -eq 0 ] && verdict=0
-    ;;
-  *)
-    if [ "$rc" -eq 0 ]; then
-      if command -v jq >/dev/null 2>&1; then
-        printf '%s' "$out" | jq -e '
-          if type == "array" then true
-          elif has("code") then (.code == 0)
-          elif has("status") then (.status == "ok" or .status == "submitted" or .status == 0)
-          elif has("errno") then (.errno == 0)
-          elif has("authenticated") then (.authenticated == true)
-          else true end' >/dev/null 2>&1 && verdict=0
-      else
+judged_by_exit="$wants_help"
+case "$command_name" in version|logout|completion|install|update) judged_by_exit=1;; esac
+if [ "$judged_by_exit" = 1 ]; then
+  [ "$rc" -eq 0 ] && verdict=0
+else
+  if [ "$rc" -eq 0 ]; then
+    if command -v jq >/dev/null 2>&1; then
+      printf '%s' "$out" | jq -e '
+        if type == "array" then true
+        elif ((.data | objects | .status) // (.status | strings) // "") as $s
+             | ($s == "confirmation_required" or $s == "authorization_required" or $s == "upgrade_required") then false
+        elif has("code") then (.code == 0)
+        elif has("status") then (.status == "ok" or .status == "submitted" or .status == 0)
+        elif has("errno") then (.errno == 0)
+        elif has("authenticated") then (.authenticated == true)
+        else true end' >/dev/null 2>&1 && verdict=0
+    else
+      auth_interrupted || {
         if printf '%s' "$out" | grep -Eq '"code"[[:space:]]*:[[:space:]]*0([^0-9]|$)' \
-           || printf '%s' "$out" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|submitted)"' \
-           || printf '%s' "$out" | grep -Eq '"errno"[[:space:]]*:[[:space:]]*0([^0-9]|$)' \
+         || printf '%s' "$out" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"(ok|submitted)"' \
+         || printf '%s' "$out" | grep -Eq '"errno"[[:space:]]*:[[:space:]]*0([^0-9]|$)' \
            || printf '%s' "$out" | grep -Eq '^[[:space:]]*\['; then
           verdict=0
         fi
-      fi
+      }
     fi
-    ;;
-esac
+  fi
+fi
+
+if [ "$verdict" -ne 0 ] && auth_interrupted; then
+  echo "bdpanw: authorization is not complete, so this command did not run — handle the JSON above per the skill's login-confirmation steps" >&2
+fi
 
 exit "$verdict"

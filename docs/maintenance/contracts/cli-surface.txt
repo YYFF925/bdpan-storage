@@ -3,6 +3,9 @@
 # Re-check after any CLI upgrade. A missing item is version drift, not a reason to guess.
 # Verify with: bash skills/baidu-drive/scripts/bdpanw.sh <command> --help
 # (bdpanw.sh adds --json and --no-check-update automatically for real calls.)
+#
+# Items marked "3.9.0" come from upstream skill 1.7.8's reference/authentication.md, not from a
+# local run: this machine still has 3.8.9. Re-verify them on a real 3.9.0, then drop this note.
 
 [commands]
 whoami            # authenticated, expires_at, has_valid_token, is_svip
@@ -37,6 +40,10 @@ vip
 --page-start --page-end     # get-content (single Word/PDF/PPT)
 --agentname --session-input --session-id
 --uid --traceid
+--auth-flow cli --skill-name baidu-drive --skill-version <VERSION>   # 3.9.0: every call incl. whoami;
+                            # bdpanw.sh adds them when `bdpan login --help` lists --auth-flow
+--auth-confirmed            # 3.9.0: only after the user confirmed the safety notice in this
+                            # session; the caller passes it, bdpanw.sh never adds it
 
 [json]
 envelope: code | status | errno | authenticated | data | error | show_msg
@@ -46,8 +53,13 @@ ls: fsid (compat fs_id), path, size, md5 (NON-standard, do not compare with loca
 whoami: expires_at, has_valid_token, is_svip
 get-content: status (running | succeeded | partial | failed), task_id, content, url
 transfer: task_id, status = submitted, files[].saved_path
+auth interruption (3.9.0): data.status (or top-level status) = confirmation_required |
+                            authorization_required | upgrade_required — the command did not run
+login (3.9.0): code == 0 and data.status == authenticated means usable credentials
 
 [wrapper_contract]
 `bdpanw.sh` treats an array as success; otherwise code==0, status in {ok, submitted},
-errno==0, or authenticated==true. It special-cases version/logout/completion/install/update
-to trust the exit code. If a new command returns a different envelope, fix the wrapper first.
+errno==0, or authenticated==true. It trusts the exit code alone for version/logout/completion/
+install/update and for any --help call. An auth interruption (see [json]) is always a failure
+whatever the exit code, and the payload is passed through unchanged. If a new command returns a
+different envelope, fix the wrapper first and run tools/test-bdpanw.sh.

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Mock of a CLI without the unified auth entry (like bdpan 3.8.9): it rejects the auth flags.
+# See bdpan (same directory) for the contract this family of mocks follows.
+printf '%s\n' "$*" >> "${MOCK_LOG:-/dev/null}"
+case "${1:-}" in
+  login) echo '  --get-auth-url'; exit 0;;
+  version) echo "bdpan: 3.8.9"; exit 0;;
+esac
+for arg in "$@"; do
+  case "$arg" in --auth-flow|--skill-name|--skill-version) echo "unknown flag: $arg" >&2; exit 1;; esac
+done
+printf '{"code":0,"data":{},"error":""}\n'

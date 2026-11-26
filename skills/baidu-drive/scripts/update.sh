@@ -66,7 +66,9 @@ for arg in "$@"; do
     esac
 done
 
+# 上游的 VERSION 带小写 v 前缀（如 v1.7.8），官方接口返回纯数字（如 1.7.8）；比较前去掉前缀。
 local="$(local_version)"
+local="${local#v}"
 echo "本地 skill 版本: ${local}"
 
 info="$(fetch_official_version)" || {
