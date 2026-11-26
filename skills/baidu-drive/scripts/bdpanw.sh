@@ -78,6 +78,17 @@ rand6() {
   od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || printf '%06x' $(( (RANDOM * 32768 + RANDOM) % 16777216 ))
 }
 
+# Short stable digest of stdin for cache keys: sha256 where available, else the POSIX CRC.
+hash16() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -c1-16
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -c1-16
+  else
+    cksum | cut -d' ' -f1
+  fi
+}
+
 # One session id per host conversation. The upstream skill requires the
 # {timestamp}-{6 random} shape and reuse within a conversation.
 session_id() {
@@ -86,7 +97,7 @@ session_id() {
   if [ -z "$host" ]; then printf '%s-%s\n' "$(date +%s)" "$(rand6)"; return; fi
   local dir key
   dir="$(state_dir)/sessions"
-  key="$(printf '%s' "$host" | sha256sum | cut -c1-16)"
+  key="$(printf '%s' "$host" | hash16)"
   if [ -f "$dir/$key" ]; then
     cat "$dir/$key"
     return

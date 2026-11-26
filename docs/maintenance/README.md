@@ -54,7 +54,8 @@
 | [tools/mcp-call.mjs](./tools/mcp-call.mjs) | 只读 MCP 维护客户端（维护用，不被 skill 加载） |
 | [tools/compare-mcp-tools.mjs](./tools/compare-mcp-tools.mjs) | 两份工具清单的差异比较 |
 | [tools/scrape-union-docs.mjs](./tools/scrape-union-docs.mjs) | 开放平台文档抓取 |
-| [tools/test-bdpanw.sh](./tools/test-bdpanw.sh) | `bdpanw.sh` 的离线测试（不联网、不碰网盘），配 [tools/bdpanw-mock/](./tools/bdpanw-mock/) 里的假 CLI |
+| [tools/test-bdpanw.sh](./tools/test-bdpanw.sh) | `bdpanw.sh` 的离线测试（不联网、不碰网盘），配 [tools/bdpanw-mock/](./tools/bdpanw-mock/) 里的假 CLI；含 bash 3.2 可移植性 lint |
+| [tools/test-hermes-writer.sh](./tools/test-hermes-writer.sh) | Hermes token 写入器的离线测试（fixture home + 桩 `hermes`，不联网） |
 | [contracts/mcp-tools.baseline.json](./contracts/mcp-tools.baseline.json) | 25 个 MCP 工具的参数基线 |
 | [contracts/cli-surface.txt](./contracts/cli-surface.txt) | 本 fork 依赖的 CLI 命令、参数与 JSON 字段 |
 

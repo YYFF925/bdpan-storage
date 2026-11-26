@@ -5,15 +5,14 @@
 # `Authorization: Bearer ${MCP_BAIDU_NETDISK_API_KEY}` and the value lives in the profile's
 # .env (what `hermes mcp add --auth header` produces). This helper keeps that split:
 #   * adds the mcp_servers entry through `hermes config set` (Hermes' own config writer) when missing
-#   * writes the value through Hermes' own save_env_value, so the file lock, quoting and atomic
-#     replace are the same ones the running gateway uses
-#   * re-reads the file and compares a digest before reporting success
+#   * replaces the value in .env with shell only: read, rewrite, atomic rename, re-read and compare
+#     a digest. No Python, no Hermes internals — runs on macOS' bash 3.2 and everywhere else
+#   * keeps the file mode and every other line; re-running with the same token changes nothing
 #
 # The token arrives in the environment and is never printed, logged or put on a command line.
 #
 # usage: MCP_TOKEN=<token> BDPANW_TOKEN_SHA256=<sha256> bash mcp-token-hermes.sh <hermes-home>/.env
-# env:   HERMES_PYTHON  interpreter to use; default is the first one that can import hermes_cli
-#        HERMES_BIN     hermes CLI to use; default is `hermes` on PATH, then <hermes-home>/bin
+# env:   HERMES_BIN  hermes CLI to use; default is `hermes` on PATH, then <hermes-home>/bin
 # prints: one JSON line {"ok":true|false, ...}   exits: 0 success, 1 failure, 2 usage
 set -u
 
@@ -33,21 +32,99 @@ fail() {
 ENV_FILE="$1"
 HOME_DIR="$(cd "$(dirname "$ENV_FILE")" 2>/dev/null && pwd)" || fail "directory of $ENV_FILE not found"
 [ -f "$HOME_DIR/config.yaml" ] || fail "$HOME_DIR has no config.yaml, so it is not a Hermes home"
+ENV_FILE="$HOME_DIR/$(basename "$ENV_FILE")"
 
 msys=0
 case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) msys=1;; esac
-# Python and the hermes CLI are native programs and Hermes' terminal disables MSYS path
-# conversion, so hand them Windows-style paths instead of /c/... ones.
-if [ "$msys" = 1 ]; then
-  HERMES_HOME="$(cygpath -w "$HOME_DIR")"
-  ENV_FILE_ARG="$(cygpath -w "$ENV_FILE")"
-else
-  HERMES_HOME="$HOME_DIR"
-  ENV_FILE_ARG="$ENV_FILE"
-fi
+# The hermes CLI is a native program and Hermes' terminal disables MSYS path conversion, so hand
+# it a Windows-style home instead of /c/... one.
+if [ "$msys" = 1 ]; then HERMES_HOME="$(cygpath -w "$HOME_DIR")"; else HERMES_HOME="$HOME_DIR"; fi
 export HERMES_HOME
 
-# ---- locate the hermes CLI and an interpreter that can import hermes_cli ------------
+sha256_hex() {                # sha256 of stdin as lowercase hex (GNU, then macOS/Perl shasum)
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256
+  else
+    return 1
+  fi | cut -d' ' -f1
+}
+
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Same quoting rule as Hermes' own .env writer: only values with '#' or quotes or whitespace.
+serialize_value() {
+  case "$1" in
+    *'#'*|*'"'*|*"'"*|*[[:space:]]*)
+      printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+env_key_of_line() {           # KEY of a .env line (export prefix and spaces tolerated, like Hermes)
+  local body="$1"
+  case "$body" in "export "*) body="${body#export }" ;; esac
+  printf '%s' "${body%%=*}" | tr -d '[:space:]'
+}
+
+write_env_value() {           # write_env_value <file> <key> <value>
+  local file="$1" key="$2" value="$3" dir tmp lock waited=0 name line found=0 serialized mode ending last_ending
+  dir="$(dirname "$file")"
+  serialized="$(serialize_value "$value")"
+  # Hermes' own lock is a native flock we cannot share; this serialises our own concurrent runs.
+  lock="$file.lock.d"
+  while ! mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -ge 10 ] && break
+    sleep 1
+  done
+  tmp="$(mktemp "$dir/.env-token.XXXXXX")" || { rmdir "$lock" 2>/dev/null; return 1; }
+  last_ending=""
+  if [ -f "$file" ]; then
+    mode="$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file" 2>/dev/null || true)"
+    [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
+    while IFS= read -r line || [ -n "$line" ]; do
+      ending=""   # keep the file's own line ending (a CRLF .env must not gain an LF-only line)
+      case "$line" in *$'\r') ending=$'\r' ;; esac
+      name="$(env_key_of_line "$line")"
+      if [ "$name" = "$key" ]; then
+        if [ "$found" = 0 ]; then
+          printf '%s=%s%s\n' "$key" "$serialized" "$ending" >> "$tmp"; found=1
+        fi
+      else
+        printf '%s\n' "$line" >> "$tmp"
+      fi
+      last_ending="$ending"
+    done < "$file"
+  fi
+  if [ "$found" = 0 ]; then
+    # The loop already terminated the last line with \n; no extra separator is needed.
+    printf '%s=%s%s\n' "$key" "$serialized" "$last_ending" >> "$tmp" || { rm -f "$tmp"; rmdir "$lock" 2>/dev/null; return 1; }
+  fi
+  if ! mv "$tmp" "$file"; then rm -f "$tmp"; rmdir "$lock" 2>/dev/null; return 1; fi
+  rmdir "$lock" 2>/dev/null
+  return 0
+}
+
+read_env_value() {            # last assignment of <key> in <file>, surrounding double quotes removed
+  local file="$1" key="$2" line name value last=""
+  [ -f "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    name="$(env_key_of_line "$line")"
+    [ "$name" = "$key" ] || continue
+    value="${line#*=}"
+    value="${value%$'\r'}"
+    case "$value" in \"*\") value="${value#\"}"; value="${value%\"}" ;; esac
+    last="$value"
+  done < "$file"
+  [ -n "$last" ] || return 1
+  printf '%s' "$last"
+}
+
+# ---- locate the hermes CLI (only for the server entry; the token write needs no helper) ----
 find_hermes() {
   local candidate
   for candidate in "${HERMES_BIN:-}" hermes "$HOME_DIR/bin/hermes.exe" "$HOME_DIR/bin/hermes"; do
@@ -56,34 +133,7 @@ find_hermes() {
   done
   return 1
 }
-
-imports_hermes() { "$1" -c 'import hermes_cli.config' >/dev/null 2>&1; }
-
-newest_venvs() { # venv interpreters under <home>/installs, newest environment first
-  local venv
-  find "$HOME_DIR/installs" -maxdepth 5 -type d -name venv 2>/dev/null | while IFS= read -r venv; do
-    [ -x "$venv/Scripts/python.exe" ] && printf '%s\t%s\n' "$(stat -c %Y "$venv" 2>/dev/null || echo 0)" "$venv/Scripts/python.exe"
-    [ -x "$venv/bin/python" ] && printf '%s\t%s\n' "$(stat -c %Y "$venv" 2>/dev/null || echo 0)" "$venv/bin/python"
-  done | sort -rn | cut -f2-
-}
-
-find_python() {
-  local candidate found=""
-  if [ -n "${HERMES_PYTHON:-}" ]; then
-    imports_hermes "$HERMES_PYTHON" && { printf '%s\n' "$HERMES_PYTHON"; return 0; }
-    return 1
-  fi
-  # Inside a Hermes terminal `python` already is the runtime's interpreter.
-  while IFS= read -r candidate; do
-    [ -n "$candidate" ] || continue
-    imports_hermes "$candidate" && { found="$candidate"; break; }
-  done < <(command -v python 2>/dev/null; command -v python3 2>/dev/null; newest_venvs)
-  [ -n "$found" ] || return 1
-  printf '%s\n' "$found"
-}
-
 HERMES="$(find_hermes)" || fail "hermes CLI not found; add the server by hand: hermes mcp add $SERVER --url $URL --auth header"
-PY="$(find_python)" || fail "no Python that can import hermes_cli; set HERMES_PYTHON to the Hermes runtime interpreter"
 
 # ---- 1. the server entry (without it the token is never used) ----------------------
 SERVER_ADDED=false
@@ -98,41 +148,12 @@ if ! "$HERMES" config get "mcp_servers.$SERVER.url" >/dev/null 2>&1; then
   SERVER_ADDED=true
 fi
 
-# ---- 2. the value, through Hermes' own writer --------------------------------------
-result="$(MCP_TOKEN="$MCP_TOKEN" BDPANW_ENV_KEY="$ENV_KEY" BDPANW_TOKEN_SHA256="$BDPANW_TOKEN_SHA256" \
-  "$PY" - "$ENV_FILE_ARG" 2>/dev/null <<'PY'
-import hashlib
-import json
-import os
-import sys
-
-try:
-    key = os.environ["BDPANW_ENV_KEY"]
-    expected = os.environ["BDPANW_TOKEN_SHA256"]
-    token = os.environ["MCP_TOKEN"]
-
-    from hermes_cli.config import get_env_path, load_env, save_env_value
-
-    save_env_value(key, token)
-    same_file = os.path.samefile(str(get_env_path()), sys.argv[1])
-    saved = load_env().get(key) or ""
-    if not same_file:
-        outcome = {"ok": False, "error": "HERMES_HOME does not resolve to the given .env; nothing verified"}
-    elif hashlib.sha256(saved.encode()).hexdigest() != expected:
-        outcome = {"ok": False, "error": "the saved value does not match; Hermes refused the .env write"}
-    else:
-        outcome = {"ok": True, "env": str(get_env_path()), "key": key, "token_length": len(token)}
-except Exception as error:  # the message is not echoed: it could quote the value
-    outcome = {"ok": False, "error": "Hermes writer failed: " + type(error).__name__}
-# Compact separators: the caller looks for the literal "ok":true, as in the ZCode writer's output.
-print(json.dumps(outcome, separators=(",", ":")))
-PY
-)" || fail "the Hermes writer did not run"
-case "$result" in
-  *'"ok":true'*) ;;
-  *) printf '%s\n' "$result"; exit 1;;
-esac
+# ---- 2. the value -------------------------------------------------------------------
+write_env_value "$ENV_FILE" "$ENV_KEY" "$MCP_TOKEN" || fail "could not write $ENV_KEY to $ENV_FILE"
+saved="$(read_env_value "$ENV_FILE" "$ENV_KEY")" || fail "$ENV_KEY is missing from $ENV_FILE after the write"
+saved_hash="$(printf '%s' "$saved" | sha256_hex)" || fail "no sha256 tool (sha256sum or shasum) to verify the write"
+[ "$saved_hash" = "$BDPANW_TOKEN_SHA256" ] || fail "the saved value does not match; the .env write was not verified"
 
 # ---- 3. report ---------------------------------------------------------------------
-printf '%s' "$result" | tr -d '\n'
-printf ',"server_added":%s}\n' "$SERVER_ADDED"
+printf '{"ok":true,"env":"%s","key":"%s","token_length":%s},"server_added":%s}\n' \
+  "$(json_escape "$ENV_FILE")" "$ENV_KEY" "${#MCP_TOKEN}" "$SERVER_ADDED"

@@ -141,6 +141,13 @@ cmd_clean() {
   echo "cleaned $id"
 }
 
+# YYYY-MM-DD[THH:MM:SS] -> seconds: GNU date, then BSD/macOS date -j.
+to_epoch() {
+  date -d "$1" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d %H:%M:%S' "${1/T/ }" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
+}
+
 cmd_stale() {
   local days="${1:-7}" f created status now cutoff
   now="$(date +%s)"
@@ -149,7 +156,7 @@ cmd_stale() {
     status="$(field "$f" status)"
     [ "$status" = "cleaned" ] && continue
     created="$(field "$f" created_at)"
-    cutoff="$(date -d "$created" +%s 2>/dev/null || echo "$now")"
+    cutoff="$(to_epoch "$created" || echo "$now")"
     if [ $(( (now - cutoff) / 86400 )) -ge "$days" ]; then
       printf '%s\t%s\t%s\t%s\n' "$(field "$f" id)" "$status" "$(field "$f" remote)" "$created"
     fi

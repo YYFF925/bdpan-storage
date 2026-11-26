@@ -92,11 +92,35 @@ fi
 STATE_DIR="$STATE/mcp-token"
 STATE_FILE="$STATE_DIR/state.env"
 
+# sha256 as lowercase hex: GNU coreutils, then macOS/Perl shasum.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256
+  else
+    return 1
+  fi | cut -d' ' -f1
+}
+
+# YYYY-MM-DD[THH:MM:SS] -> seconds: GNU date, then BSD/macOS date -j.
+to_epoch() {
+  date -d "$1" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d %H:%M:%S' "${1/T/ }" +%s 2>/dev/null && return 0
+  date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
+}
+
+# seconds -> local ISO-8601: GNU date, then BSD/macOS date -r.
+from_epoch() {
+  date -d "@$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null && return 0
+  date -r "$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null
+}
+
 if [ "$STATUS" = 1 ]; then
   [ -f "$STATE_FILE" ] || { echo "mcp-token: no recorded token state at $STATE_FILE" >&2; exit 1; }
   issued="$(sed -n 's/^issued_at=//p' "$STATE_FILE" | tail -1)"
   [ -n "$issued" ] || { echo "mcp-token: the state file has no issued_at" >&2; exit 1; }
-  issued_epoch="$(date -d "$issued" +%s 2>/dev/null || echo "")"
+  issued_epoch="$(to_epoch "$issued")"
   [ -n "$issued_epoch" ] || { echo "mcp-token: unreadable issued_at: $issued" >&2; exit 1; }
   now_epoch="$(date +%s)"
   expires_epoch=$(( issued_epoch + 30 * 86400 ))
@@ -106,7 +130,7 @@ if [ "$STATUS" = 1 ]; then
   else
     remaining_days=$(( (expires_epoch - now_epoch) / 86400 )); expired=no
   fi
-  expires_at="$(date -d "@$expires_epoch" '+%Y-%m-%dT%H:%M:%S%z')"
+  expires_at="$(from_epoch "$expires_epoch")"
   printf 'issued_at=%s\nage_days=%s\nremaining_days=%s\nexpires_at=%s\nexpired=%s\n' \
     "$issued" "$age_days" "$remaining_days" "$expires_at" "$expired"
   [ "$expired" = yes ] && echo "WARNING: the 30-day MCP token window has ended; re-authorize." >&2
@@ -194,7 +218,8 @@ if [ -n "$ISSUED_AT" ]; then
 fi
 
 mkdir -p "$STATE_DIR" 2>/dev/null || true
-hash="$(printf '%s' "$token" | sha256sum | cut -c1-16)"
+hash="$(printf '%s' "$token" | sha256_hex | cut -c1-16)"
+[ -n "$hash" ] || { echo "mcp-token: no sha256 tool (sha256sum or shasum) to fingerprint the token" >&2; exit 1; }
 prev_hash="$(sed -n 's/^token_sha256=//p' "$STATE_FILE" 2>/dev/null | tail -1)"
 prev_issued="$(sed -n 's/^issued_at=//p' "$STATE_FILE" 2>/dev/null | tail -1)"
 if [ -n "$ISSUED_AT" ]; then
@@ -214,7 +239,13 @@ write_zcode() {
     exit 1
   }
 
-  result="$(MCP_TOKEN="$token" node - "$CONFIG" <<'NODE'
+  # The program lives in a file: a here-document inside $( ) does not parse on macOS' bash 3.2.
+  local prog
+  prog="$(mktemp "${TMPDIR:-/tmp}/mcp-token-node-XXXXXX")" || {
+    echo "mcp-token: mktemp failed; edit the file manually" >&2
+    exit 1
+  }
+  cat >"$prog" <<'NODE'
 const fs = require('fs');
 const [configPath] = process.argv.slice(2);
 const token = process.env.MCP_TOKEN || '';
@@ -286,11 +317,14 @@ console.log(JSON.stringify({
   token_length: token.length,
 }));
 NODE
-  )"
+  result="$(MCP_TOKEN="$token" node - "$CONFIG" <"$prog")"
+  rm -f "$prog"
 }
 
 if [ "$HOST" = hermes ]; then
-  result="$(MCP_TOKEN="$token" BDPANW_TOKEN_SHA256="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)" \
+  token_sha="$(printf '%s' "$token" | sha256_hex)"
+  [ -n "$token_sha" ] || { echo "mcp-token: no sha256 tool (sha256sum or shasum) to verify the write" >&2; exit 1; }
+  result="$(MCP_TOKEN="$token" BDPANW_TOKEN_SHA256="$token_sha" \
     bash "$here/mcp-token-hermes.sh" "$CONFIG")"
 else
   write_zcode
@@ -304,7 +338,7 @@ fi
 printf 'token_sha256=%s\nissued_at=%s\n' "$hash" "$issued" > "$STATE_FILE"
 
 # ---- report ----------------------------------------------------------------------
-age_days=$(( ( $(date +%s) - $(date -d "$issued" +%s 2>/dev/null || date +%s) ) / 86400 ))
+age_days=$(( ( $(date +%s) - $(to_epoch "$issued" || date +%s) ) / 86400 ))
 echo "$result"
 if [ "$kept" = "yes" ]; then
   echo "issued_at: ${issued}（沿用之前的记录，age ${age_days} 天）"

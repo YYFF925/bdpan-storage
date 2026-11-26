@@ -44,7 +44,7 @@ mcp_servers:
   bash <SKILL_DIR>/scripts/mcp-token.sh --stdin --host hermes --issued-at <日期>     # 从密钥库同步
   ```
 
-  它调用 `scripts/mcp-token-hermes.sh`：值经 Hermes 自己的 `save_env_value` 写入（与运行中的网关共用同一把文件锁、引号规则和原子替换），回读并比对 sha256 后才报成功；token 只经环境变量传递，不进命令行和输出。解释器优先用 PATH 上的 `python`（Hermes 终端里就是它的运行时），其次在 `<HERMES_HOME>/installs` 下找最新的 venv，也可以用 `HERMES_PYTHON` 指定。
+  它调用 `scripts/mcp-token-hermes.sh`：值由纯 shell 写进 `.env`（读、改、同目录临时文件 + 原子替换，保留文件权限与其他行），回读并比对 sha256 后才报成功；不依赖 Python 或 Hermes 内部模块，macOS 自带的 bash 3.2 也能跑。与 Hermes 自己的写操作之间没有共享锁——若恰好在 Hermes 改配置的同时同步，重跑一次即可。token 只经环境变量传递，不进命令行和输出。
 - 同步后验证：`hermes mcp test baidu-netdisk`，列出 25 个工具即成功（header 显示为 `***`）。
 - 轮换时两个宿主各同步一次。新启动的进程会用新值；**已在运行的网关会不会立即改用新值没有实测**，稳妥做法是轮换后重启 Hermes 再验证。
 

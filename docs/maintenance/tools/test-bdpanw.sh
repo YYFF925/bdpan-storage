@@ -139,5 +139,11 @@ check "the other binary was probed again" $(( $(probes) != 1 )) "probes=$(probes
 case "$(head -n 1 "$BDPANW_STATE_DIR/cli-auth-flow" 2>/dev/null)" in *" no") c=0;; *) c=1;; esac
 check "the cache says no for this binary" $c "$(cat "$BDPANW_STATE_DIR/cli-auth-flow" 2>/dev/null)"
 
+echo; echo "H. portability lint (macOS ships bash 3.2)"
+lint="$(for f in "$SKILL_DIR"/scripts/*.sh; do
+  awk '/<<</ { next } /<</ && !/^[[:space:]]*(cat[[:space:]]|#)/ { printf "%s:%d ", FILENAME, FNR }' "$f"
+done)"
+[ -z "$lint" ]; check "every here-document is a plain 'cat' command (a heredoc inside \$( ) does not parse on bash 3.2)" $? "$lint"
+
 echo; echo "passed=$pass failed=$fail"
 [ "$fail" = 0 ]

@@ -12,7 +12,7 @@
 bash docs/maintenance/tools/test-bdpanw.sh
 ```
 
-它用假 CLI 验证包装脚本加了哪些参数、怎么判成败；**不能替代下面针对真 CLI 的回归**。
+它用假 CLI 验证包装脚本加了哪些参数、怎么判成败；**不能替代下面针对真 CLI 的回归**。它同时跑一条可移植性 lint：任何脚本里出现“放在 `$()` 里的 heredoc”就失败——macOS 自带的 bash 3.2 解析不了这种写法（2026-11-26 由使用者报告并修复）。
 
 在 Hermes 终端里跑时，交给 `jq`、`node` 等原生程序的本机路径要写 Windows 风格（Hermes 默认设了 `MSYS_NO_PATHCONV=1`），见 `reference/hosts/hermes.md`。
 
@@ -111,7 +111,9 @@ bash <SKILL_DIR>/scripts/staging.sh new up
 - 条目缺失时自动补建 `mcp_servers.baidu-netdisk`（输出 `server_added: true`），再跑一次为 `false`；
 - `config.yaml` 里只有 `${MCP_BAIDU_NETDISK_API_KEY}` 模板、不含 token；`.env` 里该键只有一行；标准输出和错误输出里都不含 token；
 - 同一 token 再写一次 → `issued_at` 保持原值；
-- `--host` 为未知值、`--config` 指向没有 `config.yaml` 的目录、`HERMES_PYTHON` 无法导入 `hermes_cli` → 分别退出 2、2、1，且 `.env` 不变。
+- `--host` 为未知值、`--config` 指向没有 `config.yaml` 的目录 → 分别退出 2、2，且 `.env` 不变；
+- 用假 token 跑一次真实写入 → `config.yaml` 和 `.env` 的其他行不变、该键只有一行、重复跑内容不变；
+- 写入器本身的离线测试：`bash docs/maintenance/tools/test-hermes-writer.sh`（fixture home + 桩 `hermes`，不联网）。
 
 ## 8. Hermes（宿主项）
 
